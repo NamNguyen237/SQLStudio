@@ -7,7 +7,10 @@ import {
   Copy, 
   Check,
   Upload,
-  Download
+  Download,
+  Undo2,
+  Redo2,
+  X
 } from 'lucide-react';
 import { getSuggestions, SuggestionItem } from '../../services/autocomplete';
 import { formatSql } from '../../utils/sqlFormatter';
@@ -31,10 +34,100 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   
   const [copied, setCopied] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   
+  // Undo / Redo history management
+  const [history, setHistory] = useState<string[]>([value]);
+  const [historyIndex, setHistoryIndex] = useState<number>(0);
+  const isUndoRedoAction = useRef(false);
+  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Synchronize history when value changes
+  useEffect(() => {
+    if (isUndoRedoAction.current) {
+      isUndoRedoAction.current = false;
+      return;
+    }
+
+    if (value === history[historyIndex]) return;
+
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+
+    const prevVal = history[historyIndex] ?? '';
+    const diffLen = Math.abs(value.length - prevVal.length);
+
+    // Large changes (paste, format, load file, clear) record immediately
+    if (diffLen > 3 || value === '' || !prevVal) {
+      setHistory(prev => {
+        const next = [...prev.slice(0, historyIndex + 1), value];
+        if (next.length > 50) next.shift();
+        return next;
+      });
+      setHistoryIndex(prev => Math.min(prev + 1, 49));
+    } else {
+      // Small keystroke changes debounce by 300ms so undo restores in chunks
+      debounceTimerRef.current = setTimeout(() => {
+        setHistory(prev => {
+          const next = [...prev.slice(0, historyIndex + 1), value];
+          if (next.length > 50) next.shift();
+          return next;
+        });
+        setHistoryIndex(prev => Math.min(prev + 1, 49));
+      }, 300);
+    }
+
+    return () => {
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    };
+  }, [value, historyIndex, history]);
+
+  // Close history dropdown on Escape
+  useEffect(() => {
+    const handleKeyDownGlobal = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && showHistory) {
+        setShowHistory(false);
+      }
+    };
+    if (showHistory) {
+      window.addEventListener('keydown', handleKeyDownGlobal);
+    }
+    return () => window.removeEventListener('keydown', handleKeyDownGlobal);
+  }, [showHistory]);
+
+
+  const handleUndo = useCallback(() => {
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+    // If user has a pending keystroke not yet in history
+    if (value !== history[historyIndex]) {
+      isUndoRedoAction.current = true;
+      onChange(history[historyIndex]);
+      return;
+    }
+    if (historyIndex > 0) {
+      const targetIdx = historyIndex - 1;
+      isUndoRedoAction.current = true;
+      setHistoryIndex(targetIdx);
+      onChange(history[targetIdx]);
+    }
+  }, [historyIndex, history, value, onChange]);
+
+  const handleRedo = useCallback(() => {
+    if (historyIndex < history.length - 1) {
+      const targetIdx = historyIndex + 1;
+      isUndoRedoAction.current = true;
+      setHistoryIndex(targetIdx);
+      onChange(history[targetIdx]);
+    }
+  }, [historyIndex, history, onChange]);
+
   // Autocomplete state
   const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -42,13 +135,8 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   const [wordToReplace, setWordToReplace] = useState('');
   const [menuPosition, setMenuPosition] = useState({ top: 30, left: 50 });
 
-  const lineCount = Math.max(value.split('\n').length, 12);
+  const lineCount = Math.max(value.split('\n').length, 10);
   const lines = Array.from({ length: lineCount }, (_, i) => i + 1);
-
-  // Sync scroll between textarea and highlights/gutters if needed
-  const handleScroll = (e: React.UIEvent<HTMLTextAreaElement>) => {
-    // handled natively
-  };
 
   const updateSuggestions = useCallback(() => {
     if (!textareaRef.current) return;
@@ -61,15 +149,14 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
       setSelectedIndex(0);
       setShowSuggestions(true);
 
-      // Estimate position from cursor
       const linesBeforeCursor = value.slice(0, pos).split('\n');
       const currentLineIdx = linesBeforeCursor.length - 1;
       const currentCol = linesBeforeCursor[currentLineIdx].length;
 
-      const lineHeight = 21; // px
-      const charWidth = 8.5; // px for monospace
+      const lineHeight = 22; // px
+      const charWidth = 8; // px for monospace
       const top = Math.min((currentLineIdx + 1) * lineHeight + 40, 240);
-      const left = Math.min(currentCol * charWidth + 50, 420);
+      const left = Math.min(currentCol * charWidth + 50, 400);
 
       setMenuPosition({ top, left });
     } else {
@@ -98,14 +185,26 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Execute with Ctrl+Enter or Cmd+Enter or F5
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+    if (((e.ctrlKey || e.metaKey) && e.key === 'Enter') || e.key === 'F5') {
       e.preventDefault();
       onExecute();
       return;
     }
-    if (e.key === 'F5') {
+
+    // Undo with Ctrl+Z
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
       e.preventDefault();
-      onExecute();
+      handleUndo();
+      return;
+    }
+
+    // Redo with Ctrl+Y or Ctrl+Shift+Z
+    if (
+      ((e.ctrlKey || e.metaKey) && (e.key === 'y' || e.key === 'Y')) ||
+      ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'z' || e.key === 'Z'))
+    ) {
+      e.preventDefault();
+      handleRedo();
       return;
     }
 
@@ -160,8 +259,6 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
     onChange(formatted);
   };
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
   const handleOpenFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -205,117 +302,174 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
         className="hidden"
       />
 
-      {/* Editor Toolbar */}
-      <div className="flex items-center justify-between px-3 py-2 bg-slate-950/70 border-b border-slate-800 text-xs">
-        <div className="flex items-center gap-2">
-          {/* Run button */}
+      {/* Editor Toolbar - Optimized for both Desktop and Mobile / Touch Screens */}
+      <div className="relative z-30 flex items-center justify-between px-2 sm:px-3 py-1.5 bg-slate-950/90 border-b border-slate-800 text-xs gap-1 select-none">
+        <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+          {/* Green Triangle Run button (Play icon only) */}
           <button
             onClick={onExecute}
             disabled={isExecuting}
-            className="flex items-center gap-1.5 px-3 py-1.5 font-medium text-white bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 disabled:opacity-50 rounded transition-colors whitespace-nowrap cursor-pointer shadow-sm"
-            title="Thực thi câu truy vấn (Ctrl + Enter hoặc F5)"
+            className="w-7 h-7 sm:w-8 sm:h-8 flex items-center justify-center font-medium text-white bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 disabled:opacity-50 rounded transition-all cursor-pointer shadow-md shadow-emerald-950/40 shrink-0 touch-manipulation hover:scale-105 active:scale-95"
+            title="Thực thi T-SQL (F5 hoặc Ctrl + Enter)"
+            aria-label="Thực thi T-SQL"
           >
-            <Play className={`w-3.5 h-3.5 fill-current ${isExecuting ? 'animate-spin' : ''}`} />
-            <span>{isExecuting ? 'Đang chạy...' : 'Thực thi (F5)'}</span>
+            <Play className={`w-3.5 h-3.5 fill-white ml-0.5 ${isExecuting ? 'animate-spin' : ''}`} />
           </button>
+
+          <div className="h-4 w-px bg-slate-800 mx-0.5 shrink-0" />
+
+          {/* Undo button */}
+          <button
+            onClick={handleUndo}
+            disabled={historyIndex <= 0 && value === history[0]}
+            className="w-7 h-7 sm:w-8 sm:h-8 flex items-center justify-center text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-750 disabled:opacity-30 disabled:cursor-not-allowed rounded transition-colors cursor-pointer shrink-0 touch-manipulation"
+            title="Hoàn tác (Ctrl + Z)"
+            aria-label="Hoàn tác"
+          >
+            <Undo2 className="w-3.5 h-3.5" />
+          </button>
+
+          {/* Redo button */}
+          <button
+            onClick={handleRedo}
+            disabled={historyIndex >= history.length - 1}
+            className="w-7 h-7 sm:w-8 sm:h-8 flex items-center justify-center text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-750 disabled:opacity-30 disabled:cursor-not-allowed rounded transition-colors cursor-pointer shrink-0 touch-manipulation"
+            title="Làm lại (Ctrl + Y hoặc Ctrl + Shift + Z)"
+            aria-label="Làm lại"
+          >
+            <Redo2 className="w-3.5 h-3.5" />
+          </button>
+
+          <div className="h-4 w-px bg-slate-800 mx-0.5 shrink-0" />
 
           {/* Format button */}
           <button
             onClick={handleFormat}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 rounded transition-colors whitespace-nowrap cursor-pointer"
+            className="flex items-center gap-1 px-2 py-1 sm:px-2.5 sm:py-1.5 text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-750 rounded transition-colors whitespace-nowrap cursor-pointer shrink-0 touch-manipulation"
             title="Định dạng lại mã: tự động căn lề thụt dòng và viết hoa từ khóa T-SQL (Shift + Alt + F)"
           >
             <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-            <span>Format SQL</span>
+            <span className="hidden md:inline">Format</span>
           </button>
 
           {/* History Dropdown */}
-          <div className="relative">
+          <div className="relative shrink-0">
             <button
-              onClick={() => setShowHistory(!showHistory)}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 rounded transition-colors whitespace-nowrap cursor-pointer"
+              onClick={() => setShowHistory(prev => !prev)}
+              className={`flex items-center gap-1 px-2 py-1 sm:px-2.5 sm:py-1.5 rounded transition-colors whitespace-nowrap cursor-pointer shrink-0 touch-manipulation ${
+                showHistory ? 'bg-purple-950/90 text-purple-200 border border-purple-700/60' : 'text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-750'
+              }`}
               title="Lịch sử các câu lệnh vừa chạy"
+              aria-label="Lịch sử truy vấn"
+              aria-expanded={showHistory}
             >
               <History className="w-3.5 h-3.5 text-purple-400" />
-              <span>Lịch sử ({queryHistory.length})</span>
+              <span className="hidden md:inline">Lịch sử ({queryHistory.length})</span>
+              <span className="md:hidden text-[10px] text-purple-300 font-mono font-bold">({queryHistory.length})</span>
             </button>
 
             {showHistory && (
-              <div 
-                className="absolute left-0 top-full mt-1 w-80 max-h-72 overflow-y-auto bg-slate-900 border border-slate-700 rounded shadow-xl py-1 z-30"
-                onMouseLeave={() => setShowHistory(false)}
-              >
-                <div className="px-3 py-1 text-[11px] font-semibold text-slate-400 border-b border-slate-800 uppercase tracking-wider">
-                  Lịch sử truy vấn gần đây
-                </div>
-                {queryHistory.length === 0 ? (
-                  <div className="px-3 py-3 text-xs text-slate-500 italic">Chưa có truy vấn nào được thực thi.</div>
-                ) : (
-                  queryHistory.map((q, idx) => (
-                    <button
-                      key={idx}
-                      onClick={() => {
-                        onChange(q);
-                        setShowHistory(false);
-                      }}
-                      className="w-full text-left px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 hover:text-white border-b border-slate-800/60 font-mono truncate block cursor-pointer transition-colors"
+              <>
+                {/* Backdrop to dismiss when clicking or tapping outside */}
+                <div 
+                  className="fixed inset-0 z-40 bg-black/25 md:bg-transparent" 
+                  onClick={() => setShowHistory(false)} 
+                />
+
+                {/* Dropdown Menu - explicitly z-50 floating over editor canvas */}
+                <div 
+                  className="absolute left-0 top-full mt-1.5 w-72 sm:w-96 max-h-80 overflow-y-auto bg-slate-900 border border-slate-700 rounded-md shadow-2xl py-1 z-50 text-slate-200"
+                >
+                  <div className="flex items-center justify-between px-3 py-1.5 text-[11px] font-semibold text-slate-400 border-b border-slate-800 uppercase tracking-wider">
+                    <span className="flex items-center gap-1.5">
+                      <History className="w-3.5 h-3.5 text-purple-400" />
+                      Lịch sử truy vấn ({queryHistory.length})
+                    </span>
+                    <button 
+                      onClick={() => setShowHistory(false)}
+                      className="text-slate-400 hover:text-white hover:bg-slate-800 p-0.5 rounded cursor-pointer transition-colors"
+                      title="Đóng menu lịch sử (Esc)"
                     >
-                      {q.replace(/\n/g, ' ')}
+                      <X className="w-3.5 h-3.5" />
                     </button>
-                  ))
-                )}
-              </div>
+                  </div>
+                  {queryHistory.length === 0 ? (
+                    <div className="px-3 py-4 text-xs text-slate-500 italic text-center">
+                      Chưa có truy vấn nào được thực thi gần đây.
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-slate-800/60">
+                      {queryHistory.map((q, idx) => (
+                        <button
+                          key={idx}
+                          onClick={() => {
+                            onChange(q);
+                            setShowHistory(false);
+                          }}
+                          className="w-full text-left px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 hover:text-sky-300 font-mono truncate block cursor-pointer transition-colors active:bg-slate-750"
+                          title={q}
+                        >
+                          <span className="text-[10px] text-slate-500 mr-2 select-none font-sans">#{idx + 1}</span>
+                          {q.replace(/\s+/g, ' ')}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </>
             )}
           </div>
         </div>
 
-        {/* Right side utility */}
-        <div className="flex items-center gap-1 sm:gap-2">
+        {/* Right side utilities (File I/O, Copy, Clear) */}
+        <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
           {/* Open local .sql file */}
           <button
             onClick={() => fileInputRef.current?.click()}
-            className="flex items-center gap-1 px-2 py-1 text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
-            title="Mở file mã nguồn .sql từ máy tính cá nhân (100% offline)"
+            className="flex items-center gap-1 px-1.5 py-1 sm:px-2 text-slate-400 hover:text-slate-200 transition-colors cursor-pointer shrink-0 touch-manipulation"
+            title="Mở file .sql từ máy tính"
           >
             <Upload className="w-3.5 h-3.5 text-sky-400" />
-            <span className="hidden sm:inline">Mở file</span>
+            <span className="hidden lg:inline text-[11px]">Mở file</span>
           </button>
 
           {/* Save local .sql file */}
           <button
             onClick={handleSaveFile}
-            className="flex items-center gap-1 px-2 py-1 text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
-            title="Lưu đoạn mã hiện tại về máy tính dưới dạng file .sql"
+            className="flex items-center gap-1 px-1.5 py-1 sm:px-2 text-slate-400 hover:text-slate-200 transition-colors cursor-pointer shrink-0 touch-manipulation"
+            title="Lưu câu lệnh thành file .sql"
           >
             <Download className="w-3.5 h-3.5 text-emerald-400" />
-            <span className="hidden sm:inline">Lưu file</span>
+            <span className="hidden lg:inline text-[11px]">Lưu file</span>
           </button>
 
+          {/* Copy button */}
           <button
             onClick={handleCopy}
-            className="flex items-center gap-1 px-2 py-1 text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
+            className="flex items-center gap-1 px-1.5 py-1 sm:px-2 text-slate-400 hover:text-slate-200 transition-colors cursor-pointer shrink-0 touch-manipulation"
             title="Sao chép câu lệnh"
           >
             {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-            <span>{copied ? 'Đã chép' : 'Chép'}</span>
+            <span className="hidden sm:inline text-[11px]">{copied ? 'Đã chép' : 'Chép'}</span>
           </button>
 
+          {/* Clear button */}
           <button
             onClick={() => onChange('')}
-            className="flex items-center gap-1 px-2 py-1 text-slate-400 hover:text-rose-400 transition-colors cursor-pointer"
+            className="flex items-center gap-1 px-1.5 py-1 sm:px-2 text-slate-400 hover:text-rose-400 transition-colors cursor-pointer shrink-0 touch-manipulation"
             title="Xóa trống khung soạn thảo"
           >
             <RotateCcw className="w-3.5 h-3.5" />
-            <span>Xóa</span>
+            <span className="hidden sm:inline text-[11px]">Xóa</span>
           </button>
         </div>
       </div>
 
-      {/* Editor Main Canvas with Line Numbers */}
-      <div ref={containerRef} className="relative flex-1 flex overflow-hidden font-mono text-[13px] bg-slate-950">
+      {/* Main Code Editing Canvas */}
+      <div ref={containerRef} className="relative z-10 flex-1 flex overflow-hidden font-mono text-[13px] bg-slate-950">
         {/* Line Numbers Gutter */}
         <div 
-          className="w-12 py-3 px-1 text-right select-none bg-slate-950/80 border-r border-slate-800/80 text-slate-600 font-mono text-xs overflow-hidden leading-6"
+          className="w-9 sm:w-12 py-3 px-1 text-right select-none bg-slate-950/80 border-r border-slate-800/80 text-slate-600 font-mono text-[11px] sm:text-xs overflow-hidden leading-6 shrink-0"
           aria-hidden="true"
         >
           {lines.map(num => (
@@ -326,7 +480,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
         </div>
 
         {/* Text Area */}
-        <div className="relative flex-1 h-full">
+        <div className="relative flex-1 h-full min-w-0">
           <textarea
             ref={textareaRef}
             value={value}
@@ -337,17 +491,16 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
             onKeyUp={updateSuggestions}
             onClick={updateSuggestions}
             onKeyDown={handleKeyDown}
-            onScroll={handleScroll}
-            placeholder="-- Nhập câu lệnh T-SQL tại đây (Ví dụ: SELECT * FROM NhanVien WHERE Luong > 20000000;)&#10;-- Bấm Ctrl + Enter hoặc nút Thực thi để chạy lệnh."
+            placeholder="-- Nhập câu lệnh T-SQL tại đây (Ví dụ: SELECT * FROM SinhVien;)&#10;-- Bấm nút tam giác xanh hoặc F5 để thực thi."
             spellCheck={false}
-            className="w-full h-full p-3 font-mono text-[13.5px] text-slate-100 bg-transparent resize-none outline-none leading-6 tracking-wide selection:bg-sky-500/30 overflow-auto"
+            className="w-full h-full p-2.5 sm:p-3 font-mono text-[13px] sm:text-[13.5px] text-slate-100 bg-transparent resize-none outline-none leading-6 tracking-wide selection:bg-sky-500/30 overflow-auto touch-manipulation"
             style={{ tabSize: 2 }}
           />
 
-          {/* Autocomplete Popup */}
+          {/* Autocomplete Popup - Touch friendly */}
           {showSuggestions && suggestions.length > 0 && (
             <div
-              className="absolute z-40 bg-slate-900 border border-slate-700 rounded-md shadow-2xl overflow-hidden w-72 text-xs"
+              className="absolute z-40 bg-slate-900 border border-slate-700 rounded-md shadow-2xl overflow-hidden w-64 sm:w-72 text-xs"
               style={{
                 top: `${menuPosition.top}px`,
                 left: `${menuPosition.left}px`,
@@ -356,7 +509,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
             >
               <div className="px-2.5 py-1 bg-slate-950 text-[10px] font-semibold text-slate-400 border-b border-slate-800 flex justify-between items-center">
                 <span>Gợi ý cú pháp T-SQL</span>
-                <span className="text-slate-500">Tab / Enter chọn</span>
+                <span className="text-slate-500">Chạm để chọn</span>
               </div>
               <div className="overflow-y-auto max-h-48 py-1">
                 {suggestions.map((item, index) => {
@@ -368,7 +521,11 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                         e.preventDefault();
                         insertSuggestion(item);
                       }}
-                      className={`px-3 py-1.5 flex items-center justify-between cursor-pointer transition-colors ${
+                      onTouchStart={(e) => {
+                        e.preventDefault();
+                        insertSuggestion(item);
+                      }}
+                      className={`px-3 py-2 sm:py-1.5 flex items-center justify-between cursor-pointer transition-colors touch-manipulation ${
                         isSelected ? 'bg-sky-600 text-white' : 'text-slate-200 hover:bg-slate-800'
                       }`}
                     >
@@ -396,21 +553,16 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
       </div>
 
       {/* Editor Bottom Status Bar */}
-      <div className="px-3 py-1.5 bg-slate-950 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400 font-mono">
-        <div className="flex items-center gap-4">
-          <span className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span>
-            <span>T-SQL Engine (Ready)</span>
-          </span>
-          <span>·</span>
-          <span>CSDL: <strong className="text-slate-200 font-medium">{activeDatabase}</strong></span>
-          <span>·</span>
-          <span>Dòng: {value.split('\n').length}</span>
+      <div className="px-3 py-1 bg-slate-950 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400 font-mono select-none">
+        <div className="flex items-center gap-3">
+          <span>Dòng: <strong className="text-slate-300">{value.split('\n').length}</strong></span>
+          <span>Ký tự: <strong className="text-slate-300">{value.length}</strong></span>
+          {activeDatabase && (
+            <span className="hidden sm:inline">CSDL: <strong className="text-sky-400 font-bold">{activeDatabase}</strong></span>
+          )}
         </div>
-        <div className="flex items-center gap-3 text-slate-500">
-          <span>Phím tắt: <kbd className="px-1 py-0.5 bg-slate-800 text-slate-300 rounded text-[10px]">Ctrl+Enter</kbd> Chạy</span>
-          <span>·</span>
-          <span><kbd className="px-1 py-0.5 bg-slate-800 text-slate-300 rounded text-[10px]">Ctrl+Space</kbd> Gợi ý</span>
+        <div className="text-[10px] text-slate-500 hidden sm:block">
+          F5 / Ctrl+Enter: Chạy | Ctrl+Z: Undo | Ctrl+Y: Redo
         </div>
       </div>
     </div>

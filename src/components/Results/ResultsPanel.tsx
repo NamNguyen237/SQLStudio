@@ -153,11 +153,11 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({ result, activeDataba
   return (
     <div className="flex flex-col h-full bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
       {/* Tab Navigation Header */}
-      <div className="flex items-center justify-between px-3 py-1.5 bg-slate-950 border-b border-slate-800 text-xs">
-        <div className="flex items-center gap-1">
+      <div className="flex items-center justify-between px-2 sm:px-3 py-1.5 bg-slate-950 border-b border-slate-800 text-xs overflow-x-auto no-scrollbar select-none gap-2 shrink-0">
+        <div className="flex items-center gap-1 shrink-0">
           <button
             onClick={() => setActiveTab('grid')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded font-medium transition-colors cursor-pointer ${
+            className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1 sm:py-1.5 rounded font-medium transition-colors cursor-pointer touch-manipulation ${
               activeTab === 'grid'
                 ? 'bg-slate-800 text-sky-400 border border-slate-700'
                 : 'text-slate-400 hover:text-slate-200'
@@ -169,7 +169,7 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({ result, activeDataba
 
           <button
             onClick={() => setActiveTab('messages')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded font-medium transition-colors cursor-pointer ${
+            className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1 sm:py-1.5 rounded font-medium transition-colors cursor-pointer touch-manipulation ${
               activeTab === 'messages'
                 ? 'bg-slate-800 text-sky-400 border border-slate-700'
                 : 'text-slate-400 hover:text-slate-200'
@@ -184,47 +184,48 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({ result, activeDataba
 
           <button
             onClick={() => setActiveTab('plan')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded font-medium transition-colors cursor-pointer ${
+            className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1 sm:py-1.5 rounded font-medium transition-colors cursor-pointer touch-manipulation ${
               activeTab === 'plan'
                 ? 'bg-slate-800 text-sky-400 border border-slate-700'
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
             <GitCommit className="w-3.5 h-3.5" />
-            <span>Kế hoạch thực thi (Plan)</span>
+            <span className="hidden sm:inline">Kế hoạch thực thi (Plan)</span>
+            <span className="sm:hidden">Plan</span>
           </button>
         </div>
 
         {/* Right side tools */}
         {activeTab === 'grid' && result && result.data && result.data.length > 0 && (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 shrink-0">
             <div className="relative">
-              <Search className="w-3 h-3 absolute left-2.5 top-2 text-slate-500" />
+              <Search className="w-3 h-3 absolute left-2 top-2 text-slate-500" />
               <input
                 type="text"
-                placeholder="Lọc dòng kết quả..."
+                placeholder="Lọc..."
                 value={searchTerm}
                 onChange={e => setSearchTerm(e.target.value)}
-                className="w-40 pl-7 pr-2 py-1 text-xs bg-slate-900 border border-slate-800 rounded text-slate-200 placeholder-slate-500 focus:outline-none focus:border-sky-500"
+                className="w-24 sm:w-36 pl-6 pr-2 py-1 text-xs bg-slate-900 border border-slate-800 rounded text-slate-200 placeholder-slate-500 focus:outline-none focus:border-sky-500"
               />
             </div>
 
             <button
               onClick={exportCSV}
-              className="flex items-center gap-1 px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded text-xs transition-colors cursor-pointer"
+              className="flex items-center gap-1 px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded text-xs transition-colors cursor-pointer touch-manipulation"
               title="Tải kết quả dạng file CSV"
             >
               <Download className="w-3 h-3 text-emerald-400" />
-              <span>CSV</span>
+              <span className="hidden sm:inline">CSV</span>
             </button>
 
             <button
               onClick={copyAsMarkdown}
-              className="flex items-center gap-1 px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded text-xs transition-colors cursor-pointer"
+              className="flex items-center gap-1 px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded text-xs transition-colors cursor-pointer touch-manipulation"
               title="Sao chép bảng kết quả dạng Markdown"
             >
               {copiedType === 'markdown' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-              <span>MD</span>
+              <span className="hidden sm:inline">{copiedType === 'markdown' ? 'Đã chép' : 'MD'}</span>
             </button>
           </div>
         )}

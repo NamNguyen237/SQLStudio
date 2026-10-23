@@ -124,6 +124,14 @@ git push origin main
 3. Giờ đây bạn có thể mở đường link và học tập T-SQL trực tiếp trên mọi thiết bị (máy tính, laptop, máy tính bảng, điện thoại) hoàn toàn miễn phí!
 
 ### 💡 Lưu ý & Xử lý sự cố thường gặp (Troubleshooting)
+- **Lỗi `HttpError: Not Found - Get Pages site failed`**:
+  - **Nguyên nhân**: Mặc định repo mới trên GitHub chưa bật tính năng Pages, nên API báo 404.
+  - **Cách khắc phục**:
+    1. Vào trang repo GitHub của bạn -> bấm tab **Settings** (ở thanh trên cùng).
+    2. Cột menu bên trái, tìm và bấm chọn mục **Pages**.
+    3. Tại phần **Build and deployment**, tìm dòng **Source** (thường đang để mặc định là *"Deploy from a branch"*).
+    4. Bấm vào dropdown và chọn 👉 **GitHub Actions**.
+    5. Sau khi chọn xong, quay lại tab **Actions** -> chọn lần chạy gần nhất và bấm **Re-run all jobs** (hoặc push commit mới) là deploy sẽ xanh lá 100%!
 - **Lỗi `Dependencies lock file is not found`**: Đã được xử lý triệt để trong file workflow bằng cách bỏ cache phụ thuộc và commit kèm file `package-lock.json`. Khi cài đặt hãy luôn dùng lệnh `npm install --legacy-peer-deps`.
 - **Cảnh báo `Node.js 20 is deprecated`**: Workflow đã được cấu hình sử dụng `node-version: '22'` (Active LTS).
 - **Trang web trắng tinh khi deploy**: Dự án đã đặt cấu hình `base: './'` trong `vite.config.ts`, đảm bảo các file tĩnh JS/CSS luôn được tải đúng dù repository của bạn có tên là gì.

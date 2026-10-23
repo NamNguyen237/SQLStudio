@@ -13,7 +13,8 @@ import {
   Code, 
   Network, 
   Trash2,
-  Download
+  Download,
+  X
 } from 'lucide-react';
 import { TableSchemaInfo, DatabaseInfo } from '../../services/sqlEngine';
 
@@ -26,6 +27,7 @@ interface DatabaseExplorerProps {
   onInjectSql: (sql: string, autoRun?: boolean) => void;
   onOpenErDiagram: () => void;
   onExportDatabase?: () => void;
+  onClose?: () => void;
 }
 
 export const DatabaseExplorer: React.FC<DatabaseExplorerProps> = ({
@@ -36,7 +38,8 @@ export const DatabaseExplorer: React.FC<DatabaseExplorerProps> = ({
   onResetAll,
   onInjectSql,
   onOpenErDiagram,
-  onExportDatabase
+  onExportDatabase,
+  onClose
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [expandedTables, setExpandedTables] = useState<Record<string, boolean>>({});
@@ -66,14 +69,25 @@ export const DatabaseExplorer: React.FC<DatabaseExplorerProps> = ({
             <Database className="w-3.5 h-3.5 text-sky-400" />
             <span>Cơ sở dữ liệu ({databaseList.length})</span>
           </span>
-          <button
-            onClick={onResetAll}
-            className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-rose-400 transition-colors cursor-pointer"
-            title="Xóa trắng tất cả CSDL để làm lại từ đầu"
-          >
-            <RotateCcw className="w-3 h-3" />
-            <span>Làm sạch CSDL</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onResetAll}
+              className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-rose-400 transition-colors cursor-pointer touch-manipulation"
+              title="Xóa trắng tất cả CSDL để làm lại từ đầu"
+            >
+              <RotateCcw className="w-3 h-3" />
+              <span>Làm sạch CSDL</span>
+            </button>
+            {onClose && (
+              <button
+                onClick={onClose}
+                className="md:hidden p-1 text-slate-400 hover:text-white rounded hover:bg-slate-800 transition-colors cursor-pointer touch-manipulation"
+                title="Đóng bảng CSDL"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Database Switcher Dropdown */}
@@ -142,24 +156,14 @@ export const DatabaseExplorer: React.FC<DatabaseExplorerProps> = ({
       {/* Tables & Columns Tree View */}
       <div className="flex-1 overflow-y-auto p-2 space-y-1 text-xs">
         {databaseList.length === 0 ? (
-          <div className="p-4 text-center text-slate-500 text-xs space-y-2 mt-4">
-            <Database className="w-8 h-8 mx-auto opacity-30 text-slate-400" />
-            <p className="text-slate-300 font-medium">Chưa có CSDL nào</p>
-            <p className="text-[11px] text-slate-500 leading-relaxed">
-              Môi trường đang hoàn toàn trống. Bạn hãy gõ câu lệnh tạo CSDL vào Editor:
-            </p>
-            <div className="p-2 bg-slate-950 border border-slate-800 rounded text-[11px] font-mono text-sky-300 text-left">
-              CREATE DATABASE QL_SinhVien;<br />
-              USE QL_SinhVien;
-            </div>
+          <div className="p-6 text-center text-slate-500 text-xs space-y-2 mt-4">
+            <Database className="w-7 h-7 mx-auto opacity-25 text-slate-400" />
+            <p className="text-slate-400 text-xs font-normal">Môi trường đang hoàn toàn trống</p>
           </div>
         ) : schemas.length === 0 ? (
-          <div className="p-4 text-center text-slate-500 text-xs space-y-2 mt-4">
-            <Table className="w-8 h-8 mx-auto opacity-30 text-slate-400" />
-            <p className="text-slate-300 font-medium">CSDL '{activeDatabase}' chưa có bảng</p>
-            <p className="text-[11px] text-slate-500 leading-relaxed">
-              Hãy viết lệnh <code>CREATE TABLE</code> để tạo các bảng dữ liệu cho CSDL này.
-            </p>
+          <div className="p-6 text-center text-slate-500 text-xs space-y-2 mt-4">
+            <Table className="w-7 h-7 mx-auto opacity-25 text-slate-400" />
+            <p className="text-slate-400 text-xs font-normal">CSDL '{activeDatabase}' chưa có bảng</p>
           </div>
         ) : (
           filteredSchemas.map(table => {

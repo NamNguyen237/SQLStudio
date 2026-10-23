@@ -8,6 +8,7 @@ import {
   AlertTriangle, 
   CheckCircle2, 
   ArrowRight,
+  ArrowLeft,
   Database,
   Table,
   Edit3,
@@ -32,6 +33,7 @@ export const HandbookView: React.FC<HandbookViewProps> = ({
   const [selectedLessonId, setSelectedLessonId] = useState<string>(UNIVERSITY_HANDBOOK[0].lessons[0].id);
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [mobileShowSidebar, setMobileShowSidebar] = useState<boolean>(true);
 
   const activeChapter = UNIVERSITY_HANDBOOK.find(c => c.id === selectedChapterId) || UNIVERSITY_HANDBOOK[0];
   const activeLesson = activeChapter.lessons.find(l => l.id === selectedLessonId) || activeChapter.lessons[0];
@@ -89,7 +91,7 @@ export const HandbookView: React.FC<HandbookViewProps> = ({
   return (
     <div className="flex h-full w-full bg-slate-950 text-slate-100 overflow-hidden">
       {/* Left Sidebar: Chapters & Lessons Index */}
-      <div className="w-72 md:w-80 h-full bg-slate-900 border-r border-slate-800 flex flex-col shrink-0">
+      <div className={`w-full md:w-80 h-full bg-slate-900 border-r border-slate-800 flex flex-col shrink-0 ${mobileShowSidebar ? 'flex' : 'hidden md:flex'}`}>
         {/* Header & Search */}
         <div className="p-3.5 border-b border-slate-800 bg-slate-950/80">
           <div className="flex items-center gap-2 mb-2.5">
@@ -130,6 +132,7 @@ export const HandbookView: React.FC<HandbookViewProps> = ({
                       setSelectedChapterId(chapter.id);
                       setSelectedLessonId(lesson.id);
                       setSearchTerm('');
+                      setMobileShowSidebar(false);
                     }}
                     className="w-full text-left p-2 rounded text-xs hover:bg-slate-800 transition-colors flex flex-col cursor-pointer"
                   >
@@ -172,7 +175,10 @@ export const HandbookView: React.FC<HandbookViewProps> = ({
                         return (
                           <button
                             key={lesson.id}
-                            onClick={() => setSelectedLessonId(lesson.id)}
+                            onClick={() => {
+                              setSelectedLessonId(lesson.id);
+                              setMobileShowSidebar(false);
+                            }}
                             className={`w-full text-left px-2 py-1.5 rounded text-xs transition-colors flex items-center gap-1.5 cursor-pointer ${
                               isLessonSelected
                                 ? 'bg-sky-950 text-sky-300 font-medium border border-sky-900/60'
@@ -200,8 +206,19 @@ export const HandbookView: React.FC<HandbookViewProps> = ({
       </div>
 
       {/* Right Content View: Lesson Details & Interactive Code Box */}
-      <div className="flex-1 overflow-y-auto p-6 md:p-8 bg-slate-950">
-        <div className="max-w-4xl mx-auto space-y-6">
+      <div className={`flex-1 overflow-y-auto p-4 sm:p-6 md:p-8 bg-slate-950 ${mobileShowSidebar ? 'hidden md:block' : 'block'}`}>
+        <div className="max-w-4xl mx-auto space-y-5 sm:space-y-6">
+          {/* Mobile Back Button */}
+          <div className="md:hidden pb-2 border-b border-slate-800">
+            <button
+              onClick={() => setMobileShowSidebar(true)}
+              className="flex items-center gap-1.5 text-xs text-sky-400 hover:text-sky-300 font-medium py-1 px-2.5 rounded bg-slate-900 border border-slate-800 cursor-pointer touch-manipulation"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span>← Xem danh mục bài học</span>
+            </button>
+          </div>
+
           {/* Breadcrumb & Chapter Title */}
           <div>
             <div className="flex items-center gap-2 text-xs text-sky-400 font-medium mb-1">
@@ -211,6 +228,7 @@ export const HandbookView: React.FC<HandbookViewProps> = ({
             </div>
             <h2 className="text-xl md:text-2xl font-bold text-white tracking-tight">
               {activeLesson.title}
+
             </h2>
             <p className="text-xs text-slate-400 mt-1">
               {activeChapter.description}
