@@ -1,0 +1,6 @@
+{
+  "name": "SQLStudio - MSSQL Learning & Cloud IDE",
+  "description": "Môi trường học tập và lập trình T-SQL / MSSQL trực tuyến với trình biên dịch trên trình duyệt, gợi ý cú pháp thông minh, bài tập thực hành và quản lý cơ sở dữ liệu trực quan.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
