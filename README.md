@@ -76,15 +76,15 @@ Mỗi bài học đều có: **Khái niệm**, **Cú pháp**, **Giải thích**,
 
 ## 🚀 Hướng dẫn Cài đặt & Chạy trên máy tính (Local)
 
-Yêu cầu máy tính đã cài đặt [Node.js](https://nodejs.org/) (phiên bản 18 trở lên).
+Yêu cầu máy tính đã cài đặt [Node.js](https://nodejs.org/) (phiên bản 20 hoặc 22+ khuyến nghị).
 
 ```bash
 # 1. Clone mã nguồn về máy
 git clone <URL_REPOSITORY_CUA_BAN>
 cd <thu_muc_du_an>
 
-# 2. Cài đặt các thư viện phụ thuộc
-npm install
+# 2. Cài đặt các thư viện phụ thuộc (sử dụng cờ --legacy-peer-deps cho React 19)
+npm install --legacy-peer-deps
 
 # 3. Khởi chạy môi trường phát triển
 npm run dev
@@ -96,7 +96,7 @@ Mở trình duyệt truy cập: `http://localhost:3000`
 
 ## 🌐 Hướng dẫn Triển khai lên GitHub Pages bằng GitHub Actions
 
-Dự án đã được cấu hình sẵn file Workflow CI/CD tại `.github/workflows/deploy.yml` và đường dẫn tương đối `base: './'` trong `vite.config.ts`. Bạn chỉ cần thực hiện 3 bước sau:
+Dự án đã được cấu hình sẵn file Workflow CI/CD tại `.github/workflows/deploy.yml`, file khóa `package-lock.json` và đường dẫn tương đối `base: './'` trong `vite.config.ts`.
 
 ### Bước 1: Đẩy mã nguồn lên GitHub
 ```bash
@@ -104,22 +104,58 @@ git add .
 git commit -m "Deploy SQLStudio to GitHub Pages"
 git push origin main
 ```
-*(Nếu nhánh chính của bạn là `master`, workflow vẫn tự động kích hoạt).*
+*(Nếu nhánh mặc định của bạn là `master`, workflow vẫn tự động nhận diện và kích hoạt).*
 
-### Bước 2: Kích hoạt GitHub Pages trong Repository Settings
+### Bước 2: Bật quyền Workflow & Cấu hình GitHub Pages
 1. Truy cập vào Repository của bạn trên GitHub.
-2. Bấm vào tab **Settings** (Cài đặt) ở góc trên.
-3. Chọn mục **Pages** ở thanh menu bên trái.
-4. Ở phần **Build and deployment** -> mục **Source**, chọn:
-   👉 **GitHub Actions** *(thay vì "Deploy from a branch")*.
+2. Vào **Settings** -> **Actions** -> **General**:
+   - Ở mục **Workflow permissions**, chọn **Read and write permissions**.
+   - Bấm **Save**.
+3. Vào **Settings** -> **Pages** (ở cột menu bên trái):
+   - Ở phần **Build and deployment** -> mục **Source**, chọn:
+     👉 **GitHub Actions** *(thay vì "Deploy from a branch")*.
 
 ### Bước 3: Xem kết quả triển khai
 1. Chuyển sang tab **Actions** trên GitHub để theo dõi tiến trình build tự động.
-2. Sau khoảng 1-2 phút, GitHub Actions sẽ hoàn tất và hiển thị đường link trang web của bạn:
+2. Sau khoảng 1 phút, workflow `Deploy to GitHub Pages` sẽ hoàn thành xanh lá (Success) và xuất hiện đường link trang web của bạn:
    ```
    https://<username>.github.io/<ten-repository>/
    ```
-3. Giờ đây bạn và bạn bè có thể truy cập và thực hành T-SQL bất kỳ lúc nào từ điện thoại hoặc máy tính mà không cần cài đặt gì thêm!
+3. Giờ đây bạn có thể mở đường link và học tập T-SQL trực tiếp trên mọi thiết bị (máy tính, laptop, máy tính bảng, điện thoại) hoàn toàn miễn phí!
+
+### 💡 Lưu ý & Xử lý sự cố thường gặp (Troubleshooting)
+- **Lỗi `Dependencies lock file is not found`**: Đã được xử lý triệt để trong file workflow bằng cách bỏ cache phụ thuộc và commit kèm file `package-lock.json`. Khi cài đặt hãy luôn dùng lệnh `npm install --legacy-peer-deps`.
+- **Cảnh báo `Node.js 20 is deprecated`**: Workflow đã được cấu hình sử dụng `node-version: '22'` (Active LTS).
+- **Trang web trắng tinh khi deploy**: Dự án đã đặt cấu hình `base: './'` trong `vite.config.ts`, đảm bảo các file tĩnh JS/CSS luôn được tải đúng dù repository của bạn có tên là gì.
+
+---
+
+## 📁 Cấu trúc Thư mục Dự án
+
+```text
+├── .github/
+│   └── workflows/
+│       └── deploy.yml          # GitHub Actions tự động build & deploy lên Pages
+├── src/
+│   ├── components/
+│   │   ├── DatabaseExplorer/   # Quản lý CSDL động, danh sách bảng, ERD modal, xuất SQL
+│   │   ├── Editor/             # Trình soạn thảo SQL, phím tắt F5, format code, file I/O
+│   │   ├── Handbook/           # Sổ tay cú pháp T-SQL 8 chương giáo trình Đại học
+│   │   ├── ResultGrid/         # Lưới kết quả truy vấn, xuất CSV, Execution Plan mô phỏng
+│   │   └── Layout/             # Thanh công cụ trên cùng & bố cục cửa sổ
+│   ├── services/
+│   │   └── sqlEngine.ts        # Engine SQL thuần Client-side (AlaSQL + T-SQL Polyfill)
+│   ├── types/
+│   │   └── index.ts            # Khai báo kiểu TypeScript
+│   ├── App.tsx                 # Điều phối state chính của ứng dụng
+│   ├── main.tsx                # Entry point React 19
+│   └── index.css               # Tailwind CSS v4 styling
+├── .npmrc                      # Thiết lập legacy-peer-deps=true
+├── package.json                # Danh sách thư viện & scripts
+├── package-lock.json           # File khóa phiên bản package chuẩn
+├── vite.config.ts              # Cấu hình Vite với base: './' cho GitHub Pages
+└── README.md                   # Tài liệu hướng dẫn sử dụng và triển khai
+```
 
 ---
 
@@ -130,12 +166,13 @@ git push origin main
 | **Giao diện & UI** | [React 19](https://react.dev/), [Tailwind CSS v4](https://tailwindcss.com/) |
 | **Ngôn ngữ** | [TypeScript](https://www.typescriptlang.org/) |
 | **Công cụ Build** | [Vite 8](https://vitejs.dev/) |
-| **In-Browser SQL Engine** | [AlaSQL](https://github.com/AlaSQL/alasql) + T-SQL Polyfill & Extensions |
+| **In-Browser SQL Engine** | [AlaSQL](https://github.com/AlaSQL/alasql) + T-SQL Extension Polyfill |
 | **Biểu tượng (Icons)** | [Lucide React](https://lucide.dev/) |
-| **Tự động hóa CI/CD** | [GitHub Actions](https://github.com/features/actions) |
+| **Tự động hóa CI/CD** | [GitHub Actions](https://github.com/features/actions) + GitHub Pages |
 
 ---
 
 ## 📝 Bản quyền (License)
 
-Phát hành dưới giấy phép [MIT License](LICENSE). Bạn hoàn toàn có thể tự do sử dụng, chỉnh sửa và chia sẻ phục vụ mục đích học tập và giảng dạy.
+Phát hành dưới giấy phép [MIT License](LICENSE). Hoàn toàn tự do sử dụng, chỉnh sửa và chia sẻ phục vụ mục đích học tập, nghiên cứu và giảng dạy.
+
