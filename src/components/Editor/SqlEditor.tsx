@@ -33,12 +33,17 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   queryHistory
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const gutterRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   
   const [copied, setCopied] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   
+  // Cursor line and column tracking
+  const [cursorLine, setCursorLine] = useState<number>(1);
+  const [cursorCol, setCursorCol] = useState<number>(1);
+
   // Undo / Redo history management
   const [history, setHistory] = useState<string[]>([value]);
   const [historyIndex, setHistoryIndex] = useState<number>(0);
@@ -85,6 +90,45 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
       if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
     };
   }, [value, historyIndex, history]);
+
+  // Update cursor position (line and col)
+  const updateCursorPosition = useCallback(() => {
+    if (!textareaRef.current) return;
+    const pos = textareaRef.current.selectionStart ?? 0;
+    const linesBefore = value.slice(0, pos).split('\n');
+    setCursorLine(linesBefore.length);
+    setCursorCol(linesBefore[linesBefore.length - 1].length + 1);
+  }, [value]);
+
+  useEffect(() => {
+    updateCursorPosition();
+  }, [value, updateCursorPosition]);
+
+  // Synchronize gutter scroll position with textarea
+  const handleScroll = useCallback(() => {
+    if (textareaRef.current && gutterRef.current) {
+      gutterRef.current.scrollTop = textareaRef.current.scrollTop;
+    }
+  }, []);
+
+  const handleGutterWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    if (textareaRef.current) {
+      textareaRef.current.scrollTop += e.deltaY;
+    }
+  };
+
+  const handleLineClick = (lineNum: number) => {
+    if (!textareaRef.current) return;
+    const allLines = value.split('\n');
+    let charIndex = 0;
+    for (let i = 0; i < lineNum - 1 && i < allLines.length; i++) {
+      charIndex += allLines[i].length + 1;
+    }
+    textareaRef.current.focus();
+    textareaRef.current.setSelectionRange(charIndex, charIndex);
+    setCursorLine(lineNum);
+    setCursorCol(1);
+  };
 
   // Close history dropdown on Escape
   useEffect(() => {
@@ -135,8 +179,9 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   const [wordToReplace, setWordToReplace] = useState('');
   const [menuPosition, setMenuPosition] = useState({ top: 30, left: 50 });
 
-  const lineCount = Math.max(value.split('\n').length, 10);
-  const lines = Array.from({ length: lineCount }, (_, i) => i + 1);
+  // Accurate line count matching actual document lines
+  const linesCount = Math.max(value.split('\n').length, 1);
+  const lines = Array.from({ length: linesCount }, (_, i) => i + 1);
 
   const updateSuggestions = useCallback(() => {
     if (!textareaRef.current) return;
@@ -153,9 +198,10 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
       const currentLineIdx = linesBeforeCursor.length - 1;
       const currentCol = linesBeforeCursor[currentLineIdx].length;
 
-      const lineHeight = 22; // px
+      const lineHeight = 24; // px
       const charWidth = 8; // px for monospace
-      const top = Math.min((currentLineIdx + 1) * lineHeight + 40, 240);
+      const scrollOffset = textareaRef.current.scrollTop;
+      const top = Math.min(Math.max((currentLineIdx + 1) * lineHeight + 12 - scrollOffset, 10), 240);
       const left = Math.min(currentCol * charWidth + 50, 400);
 
       setMenuPosition({ top, left });
@@ -469,14 +515,34 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
       <div ref={containerRef} className="relative z-10 flex-1 flex overflow-hidden font-mono text-[13px] bg-slate-950">
         {/* Line Numbers Gutter */}
         <div 
-          className="w-9 sm:w-12 py-3 px-1 text-right select-none bg-slate-950/80 border-r border-slate-800/80 text-slate-600 font-mono text-[11px] sm:text-xs overflow-hidden leading-6 shrink-0"
+          ref={gutterRef}
+          onWheel={handleGutterWheel}
+          style={{ 
+            paddingTop: '12px', 
+            paddingBottom: '24px',
+            minWidth: linesCount >= 1000 ? '3.5rem' : linesCount >= 100 ? '2.75rem' : '2.25rem'
+          }}
+          className="select-none bg-slate-950/90 border-r border-slate-800 text-slate-500 font-mono text-[12px] overflow-hidden shrink-0"
           aria-hidden="true"
         >
-          {lines.map(num => (
-            <div key={num} className="h-6">
-              {num}
-            </div>
-          ))}
+          {lines.map(num => {
+            const isCurrent = num === cursorLine;
+            return (
+              <div 
+                key={num} 
+                onClick={() => handleLineClick(num)}
+                style={{ height: '24px', lineHeight: '24px' }}
+                className={`pr-2 text-right cursor-pointer transition-colors ${
+                  isCurrent 
+                    ? 'text-sky-400 font-bold bg-sky-950/40' 
+                    : 'text-slate-600 hover:text-slate-300'
+                }`}
+                title={`Nhảy tới dòng ${num}`}
+              >
+                {num}
+              </div>
+            );
+          })}
         </div>
 
         {/* Text Area */}
@@ -484,17 +550,32 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
           <textarea
             ref={textareaRef}
             value={value}
+            wrap="off"
             onChange={(e) => {
               onChange(e.target.value);
+              updateCursorPosition();
               updateSuggestions();
             }}
-            onKeyUp={updateSuggestions}
-            onClick={updateSuggestions}
+            onScroll={handleScroll}
+            onKeyUp={() => {
+              updateCursorPosition();
+              updateSuggestions();
+            }}
+            onClick={() => {
+              updateCursorPosition();
+              updateSuggestions();
+            }}
+            onSelect={updateCursorPosition}
             onKeyDown={handleKeyDown}
             placeholder="-- Nhập câu lệnh T-SQL tại đây (Ví dụ: SELECT * FROM SinhVien;)&#10;-- Bấm nút tam giác xanh hoặc F5 để thực thi."
             spellCheck={false}
-            className="w-full h-full p-2.5 sm:p-3 font-mono text-[13px] sm:text-[13.5px] text-slate-100 bg-transparent resize-none outline-none leading-6 tracking-wide selection:bg-sky-500/30 overflow-auto touch-manipulation"
-            style={{ tabSize: 2 }}
+            className="w-full h-full font-mono text-[13px] text-slate-100 bg-transparent resize-none outline-none tracking-wide selection:bg-sky-500/30 overflow-auto whitespace-pre touch-manipulation px-3"
+            style={{ 
+              tabSize: 2,
+              paddingTop: '12px',
+              paddingBottom: '24px',
+              lineHeight: '24px'
+            }}
           />
 
           {/* Autocomplete Popup - Touch friendly */}
@@ -555,7 +636,8 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
       {/* Editor Bottom Status Bar */}
       <div className="px-3 py-1 bg-slate-950 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400 font-mono select-none">
         <div className="flex items-center gap-3">
-          <span>Dòng: <strong className="text-slate-300">{value.split('\n').length}</strong></span>
+          <span>Dòng: <strong className="text-slate-300">{cursorLine}</strong> / {linesCount}</span>
+          <span>Cột: <strong className="text-slate-300">{cursorCol}</strong></span>
           <span>Ký tự: <strong className="text-slate-300">{value.length}</strong></span>
           {activeDatabase && (
             <span className="hidden sm:inline">CSDL: <strong className="text-sky-400 font-bold">{activeDatabase}</strong></span>

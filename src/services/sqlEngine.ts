@@ -117,6 +117,26 @@ export class SqlEngineService {
         ? crypto.randomUUID().toUpperCase() 
         : 'UUID-' + Math.random().toString(36).substring(2, 9).toUpperCase();
     };
+
+    // T-SQL DB_NAME()
+    alasql.fn.DB_NAME = () => {
+      return this.activeDatabase || 'master';
+    };
+
+    // T-SQL DB_ID()
+    alasql.fn.DB_ID = (name?: any) => {
+      if (!name) return this.activeDatabase ? 1 : null;
+      const clean = String(name).replace(/^\[|\]$/g, '');
+      return this.userDatabases.has(clean) || !!alasql.databases[clean] ? 1 : null;
+    };
+
+    // T-SQL OBJECT_ID()
+    alasql.fn.OBJECT_ID = (name?: any) => {
+      if (!name) return null;
+      const clean = String(name).replace(/^(?:dbo\.|\[dbo\]\.)?\[?([a-zA-Z0-9_]+)\]?$/i, '$1');
+      const db = this.activeDatabase || '_scratchpad_';
+      return alasql.databases[db]?.tables?.[clean] ? 1 : null;
+    };
   }
 
   public initMasterDatabase() {
@@ -209,17 +229,80 @@ export class SqlEngineService {
     const rawBatches = sanitized.split(/^\s*GO\s*$/gim);
     const statements: string[] = [];
 
+    // Helper to determine if an IF statement has received its target body statement
+    const hasIfBody = (s: string): boolean => {
+      if (!/^\s*IF\b/i.test(s)) return true;
+      const ifMatch = s.match(/^\s*IF\s+(?:EXISTS\s*)?\(/i);
+      if (!ifMatch) {
+        return /^\s*IF\s+[^()]+\b(DROP|CREATE|ALTER|DELETE|UPDATE|INSERT|SELECT|SET|EXEC|PRINT|BEGIN)\b/i.test(s);
+      }
+      let depth = 0;
+      const startIdx = s.indexOf('(');
+      let endIdx = -1;
+      for (let i = startIdx; i < s.length; i++) {
+        if (s[i] === '(') depth++;
+        else if (s[i] === ')') {
+          depth--;
+          if (depth === 0) {
+            endIdx = i;
+            break;
+          }
+        }
+      }
+      if (endIdx === -1) return false;
+      const remainder = s.substring(endIdx + 1).trim();
+      return remainder.length > 0;
+    };
+
     for (const batch of rawBatches) {
-      const parts = batch.split(';');
+      const lines = batch.split('\n');
+      let currentStmt = '';
+      let parenDepth = 0;
+      let inString = false;
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const trimmedLine = line.trim();
+        if (!trimmedLine) continue;
+
+        const trimmedCurrent = currentStmt.trim();
+        const waitingForIfBody = /^\s*IF\b/i.test(trimmedCurrent) && !hasIfBody(trimmedCurrent);
+
+        const startsNewStmt = parenDepth === 0 && trimmedCurrent.length > 0 && !waitingForIfBody &&
+          /^(CREATE|ALTER|DROP|USE|SELECT|INSERT|UPDATE|DELETE|IF|TRUNCATE|PRINT|SET|EXEC)\b/i.test(trimmedLine);
+
+        if (startsNewStmt) {
+          statements.push(trimmedCurrent);
+          currentStmt = line;
+        } else {
+          currentStmt += (currentStmt ? '\n' : '') + line;
+        }
+
+        for (let c = 0; c < line.length; c++) {
+          if (line[c] === "'" && (c === 0 || line[c - 1] !== '\\')) inString = !inString;
+          if (!inString) {
+            if (line[c] === '(') parenDepth++;
+            if (line[c] === ')') parenDepth = Math.max(0, parenDepth - 1);
+          }
+        }
+      }
+      if (currentStmt.trim()) {
+        statements.push(currentStmt.trim());
+      }
+    }
+
+    const finalStmts: string[] = [];
+    for (const s of statements) {
+      const parts = s.split(';');
       for (const p of parts) {
         const trimmed = p.trim();
         if (trimmed) {
-          statements.push(trimmed);
+          finalStmts.push(trimmed);
         }
       }
     }
 
-    return statements;
+    return finalStmts;
   }
 
   private extractColumnsFromCreateTable(stmt: string): { tableName: string; columns: ColumnDefinition[] } | null {
@@ -248,12 +331,19 @@ export class SqlEngineService {
     }
     if (cur.trim()) lines.push(cur.trim());
 
-    // Check composite primary key at table level: PRIMARY KEY (col1, col2)
+    // Check composite primary key at table level: PRIMARY KEY (col1, col2) or CONSTRAINT PK PRIMARY KEY (...)
     const compositePkCols = new Set<string>();
+    const tableFks = new Map<string, string>();
+
     for (const line of lines) {
-      const pkMatch = line.match(/^PRIMARY\s+KEY\s*\(([^)]+)\)/i);
+      const pkMatch = line.match(/(?:CONSTRAINT\s+[a-zA-Z0-9_]+\s+)?PRIMARY\s+KEY\s*\(([^)]+)\)/i);
       if (pkMatch) {
         pkMatch[1].split(',').forEach(c => compositePkCols.add(c.trim().replace(/^\[|\]$/g, '')));
+      }
+
+      const fkMatch = line.match(/(?:CONSTRAINT\s+[a-zA-Z0-9_]+\s+)?FOREIGN\s+KEY\s*\(\s*\[?([a-zA-Z0-9_]+)\]?\s*\)\s*REFERENCES\s+(?:\[?dbo\]?\.)?\[?([a-zA-Z0-9_]+)\]?\s*\(\s*\[?([a-zA-Z0-9_]+)\]?\s*\)/i);
+      if (fkMatch) {
+        tableFks.set(fkMatch[1], `${fkMatch[2]}(${fkMatch[3]})`);
       }
     }
 
@@ -267,11 +357,13 @@ export class SqlEngineService {
         const colName = parts[0].replace(/^\[|\]$/g, '');
         const colType = parts[1].replace(/,$/, '');
         const isPk = /PRIMARY\s+KEY/i.test(line) || compositePkCols.has(colName);
-        const isFk = /REFERENCES/i.test(line);
-        let fkTarget: string | undefined;
-        const refMatch = line.match(/REFERENCES\s+\[?([a-zA-Z0-9_]+)\]?\s*\(\s*\[?([a-zA-Z0-9_]+)\]?\s*\)/i);
-        if (refMatch) {
-          fkTarget = `${refMatch[1]}(${refMatch[2]})`;
+        const isFk = /REFERENCES/i.test(line) || tableFks.has(colName);
+        let fkTarget = tableFks.get(colName);
+        if (!fkTarget) {
+          const refMatch = line.match(/REFERENCES\s+\[?([a-zA-Z0-9_]+)\]?\s*\(\s*\[?([a-zA-Z0-9_]+)\]?\s*\)/i);
+          if (refMatch) {
+            fkTarget = `${refMatch[1]}(${refMatch[2]})`;
+          }
         }
 
         columns.push({
@@ -287,6 +379,55 @@ export class SqlEngineService {
     return { tableName, columns };
   }
 
+  private handleAlterTableConstraints(stmt: string): boolean {
+    const tableMatch = stmt.match(/ALTER\s+TABLE\s+(?:\[?dbo\]?\.)?\[?([a-zA-Z0-9_]+)\]?/i);
+    if (!tableMatch) return false;
+    const tableName = tableMatch[1];
+    const dbKey = this.activeDatabase || '_scratchpad_';
+    if (!this.tableMetadata[dbKey]) this.tableMetadata[dbKey] = {};
+    if (!this.tableMetadata[dbKey][tableName]) {
+      const db = alasql.databases[dbKey];
+      const cols = db && db.tables && (db.tables[tableName] as any)?.columns;
+      if (Array.isArray(cols)) {
+        this.tableMetadata[dbKey][tableName] = cols.map((c: any) => ({
+          name: c.columnid || c.name || String(c),
+          type: (c.dbtypeid || 'VARCHAR').toUpperCase(),
+          isPk: false,
+          isFk: false
+        }));
+      } else {
+        this.tableMetadata[dbKey][tableName] = [];
+      }
+    }
+
+    const tableCols = this.tableMetadata[dbKey][tableName];
+
+    // Primary keys
+    const pkMatches = Array.from(stmt.matchAll(/(?:CONSTRAINT\s+[a-zA-Z0-9_]+\s+)?PRIMARY\s+KEY\s*\(([^)]+)\)/gi));
+    for (const m of pkMatches) {
+      const cols = m[1].split(',').map(c => c.trim().replace(/^\[|\]$/g, ''));
+      for (const colName of cols) {
+        const found = tableCols.find(c => c.name.toLowerCase() === colName.toLowerCase());
+        if (found) found.isPk = true;
+      }
+    }
+
+    // Foreign keys
+    const fkMatches = Array.from(stmt.matchAll(/(?:CONSTRAINT\s+([a-zA-Z0-9_]+)\s+)?FOREIGN\s+KEY\s*\(\s*\[?([a-zA-Z0-9_]+)\]?\s*\)\s*REFERENCES\s+(?:\[?dbo\]?\.)?\[?([a-zA-Z0-9_]+)\]?\s*\(\s*\[?([a-zA-Z0-9_]+)\]?\s*\)/gi));
+    for (const m of fkMatches) {
+      const colName = m[2];
+      const targetTable = m[3];
+      const targetCol = m[4];
+      const found = tableCols.find(c => c.name.toLowerCase() === colName.toLowerCase());
+      if (found) {
+        found.isFk = true;
+        found.fkTarget = `${targetTable}(${targetCol})`;
+      }
+    }
+
+    return true;
+  }
+
   private preprocessStatement(sql: string): string {
     let s = sql.trim();
     // Strip T-SQL bracket identifiers: [dbo].[NhanVien] -> NhanVien, [HoTen] -> HoTen
@@ -294,6 +435,12 @@ export class SqlEngineService {
     s = s.replace(/dbo\.([a-zA-Z0-9_]+)/g, '$1');
     // Replace T-SQL N'...' unicode string prefix with '...' for alasql compatibility
     s = s.replace(/N'((?:''|[^'])*)'/g, "'$1'");
+    // Map T-SQL IDENTITY to AUTO_INCREMENT
+    s = s.replace(/\bIDENTITY\s*(?:\(\s*\d+\s*,\s*\d+\s*\))?/gi, 'AUTO_INCREMENT');
+    // Map MAX types to length limits
+    s = s.replace(/\bVARCHAR\s*\(\s*MAX\s*\)/gi, 'VARCHAR(4000)');
+    s = s.replace(/\bNVARCHAR\s*\(\s*MAX\s*\)/gi, 'NVARCHAR(4000)');
+    s = s.replace(/\bVARBINARY\s*\(\s*MAX\s*\)/gi, 'VARBINARY(4000)');
     return s;
   }
 
@@ -336,7 +483,28 @@ export class SqlEngineService {
           continue;
         }
 
-        // 2. Handle CREATE DATABASE [name]
+        // 2. Handle IF EXISTS ... DROP DATABASE [name] / IF DB_ID(...) IS NOT NULL DROP DATABASE
+        const ifDropDb = stmt.match(/^IF\s+(?:EXISTS\s*\([\s\S]*?\)|DB_ID\([^)]+\)\s+IS\s+NOT\s+NULL)\s+DROP\s+DATABASE\s+(?:IF\s+EXISTS\s+)?\[?([a-zA-Z0-9_]+)\]?/i);
+        if (ifDropDb) {
+          const delDb = ifDropDb[1];
+          if (this.userDatabases.has(delDb) || alasql.databases[delDb]) {
+            try {
+              alasql(`DROP DATABASE IF EXISTS ${delDb};`);
+            } catch {
+              // ignore
+            }
+            this.userDatabases.delete(delDb);
+            delete this.tableMetadata[delDb];
+            if (this.activeDatabase === delDb) {
+              this.setActiveDatabase('master');
+            }
+          }
+          lastQueryType = 'DROP';
+          lastResult = `Cơ sở dữ liệu '${delDb}' đã được xóa (nếu tồn tại).`;
+          continue;
+        }
+
+        // 3. Handle CREATE DATABASE [name]
         const createDbMatch = stmt.match(/^CREATE\s+DATABASE\s+(?:IF\s+NOT\s+EXISTS\s+)?\[?([a-zA-Z0-9_]+)\]?/i);
         if (createDbMatch) {
           const newDb = createDbMatch[1];
@@ -355,11 +523,15 @@ export class SqlEngineService {
           continue;
         }
 
-        // 3. Handle DROP DATABASE [name]
+        // 4. Handle DROP DATABASE [name]
         const dropDbMatch = stmt.match(/^DROP\s+DATABASE\s+(?:IF\s+EXISTS\s+)?\[?([a-zA-Z0-9_]+)\]?/i);
         if (dropDbMatch) {
           const delDb = dropDbMatch[1];
-          alasql(`DROP DATABASE IF EXISTS ${delDb};`);
+          try {
+            alasql(`DROP DATABASE IF EXISTS ${delDb};`);
+          } catch {
+            // ignore
+          }
           this.userDatabases.delete(delDb);
           delete this.tableMetadata[delDb];
           if (this.activeDatabase === delDb) {
@@ -370,7 +542,64 @@ export class SqlEngineService {
           continue;
         }
 
-        // 4. Handle CREATE TABLE metadata extraction
+        // 5. Handle IF EXISTS ... DROP TABLE [name] / IF OBJECT_ID(...) IS NOT NULL DROP TABLE
+        const ifDropTbl = stmt.match(/^IF\s+(?:EXISTS\s*\([\s\S]*?\)|OBJECT_ID\([^)]+\)\s+IS\s+NOT\s+NULL)\s+DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:\[?dbo\]?\.)?\[?([a-zA-Z0-9_]+)\]?/i);
+        if (ifDropTbl) {
+          const delTbl = ifDropTbl[1];
+          const dbKey = this.activeDatabase || '_scratchpad_';
+          try {
+            alasql(`USE ${dbKey};`);
+            alasql(`DROP TABLE IF EXISTS ${delTbl};`);
+          } catch {
+            // ignore
+          }
+          if (this.tableMetadata[dbKey]) {
+            delete this.tableMetadata[dbKey][delTbl];
+          }
+          lastQueryType = 'DROP';
+          lastResult = `Bảng '${delTbl}' đã được xóa (nếu tồn tại).`;
+          continue;
+        }
+
+        // 6. Handle ALTER TABLE constraints (ADD CONSTRAINT PK/FK/CHECK)
+        if (/^ALTER\s+TABLE\b/i.test(stmt) && /(?:CONSTRAINT|PRIMARY\s+KEY|FOREIGN\s+KEY|CHECK)\b/i.test(stmt)) {
+          this.handleAlterTableConstraints(rawStmt);
+          lastQueryType = 'ALTER';
+          const tblMatch = stmt.match(/ALTER\s+TABLE\s+(?:\[?dbo\]?\.)?\[?([a-zA-Z0-9_]+)\]?/i);
+          lastResult = `Đã thiết lập ràng buộc (Constraint) cho bảng '${tblMatch ? tblMatch[1] : ''}' thành công.`;
+          continue;
+        }
+
+        // 7. Handle SELECT queries from system catalogs like sys.databases
+        if (/^SELECT\b/i.test(stmt) && /FROM\s+(?:sys\.databases|sysdatabases)\b/i.test(stmt)) {
+          const rows = Array.from(this.userDatabases).map((name, i) => ({
+            database_id: i + 1,
+            name,
+            create_date: new Date().toISOString()
+          }));
+          lastResult = rows;
+          lastQueryType = 'SELECT';
+          lastSelectQuery = stmt;
+          continue;
+        }
+
+        // 8. Handle SELECT queries from sys.tables
+        if (/^SELECT\b/i.test(stmt) && /FROM\s+(?:sys\.tables|sysobjects)\b/i.test(stmt)) {
+          const dbKey = this.activeDatabase || '_scratchpad_';
+          const tables = alasql.databases[dbKey]?.tables ? Object.keys(alasql.databases[dbKey].tables) : [];
+          const rows = tables.map((name, i) => ({
+            object_id: i + 1,
+            name,
+            type: 'U',
+            type_desc: 'USER_TABLE'
+          }));
+          lastResult = rows;
+          lastQueryType = 'SELECT';
+          lastSelectQuery = stmt;
+          continue;
+        }
+
+        // 9. Handle CREATE TABLE metadata extraction & execution
         if (/^CREATE\s+TABLE/i.test(stmt)) {
           const meta = this.extractColumnsFromCreateTable(rawStmt);
           if (meta) {
