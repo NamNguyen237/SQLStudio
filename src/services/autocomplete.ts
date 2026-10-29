@@ -74,6 +74,12 @@ export function getSuggestions(
   const match = textBeforeCursor.match(/([a-zA-Z0-9_]+)$/);
   const prefix = match ? match[1] : '';
 
+  // Do not trigger autocomplete when typing a custom alias after 'AS'
+  // e.g. "SELECT MaSV AS ", "SELECT MaSV AS Ma", "SELECT MaSV AS [Mã "
+  if (/\bAS\s+([a-zA-Z0-9_]*|\[[^\]]*|'[^']*|"[^"]*)$/i.test(textBeforeCursor)) {
+    return { suggestions: [], wordToReplace: '' };
+  }
+
   if (!prefix && textBeforeCursor.slice(-1) !== ' ' && textBeforeCursor.slice(-1) !== '.') {
     return { suggestions: [], wordToReplace: '' };
   }

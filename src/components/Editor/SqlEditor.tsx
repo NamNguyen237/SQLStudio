@@ -178,6 +178,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [wordToReplace, setWordToReplace] = useState('');
   const [menuPosition, setMenuPosition] = useState({ top: 30, left: 50 });
+  const hasNavigatedSuggestions = useRef(false);
 
   // Accurate line count matching actual document lines
   const linesCount = Math.max(value.split('\n').length, 1);
@@ -192,6 +193,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
       setSuggestions(res.suggestions);
       setWordToReplace(res.wordToReplace);
       setSelectedIndex(0);
+      hasNavigatedSuggestions.current = false;
       setShowSuggestions(true);
 
       const linesBeforeCursor = value.slice(0, pos).split('\n');
@@ -254,6 +256,13 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
       return;
     }
 
+    // Trigger autocomplete manually with Ctrl+Space
+    if ((e.ctrlKey || e.metaKey) && (e.key === ' ' || e.code === 'Space')) {
+      e.preventDefault();
+      updateSuggestions();
+      return;
+    }
+
     // Format with Shift+Alt+F
     if (e.shiftKey && e.altKey && (e.key === 'f' || e.key === 'F')) {
       e.preventDefault();
@@ -261,27 +270,47 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
       return;
     }
 
-    // Autocomplete navigation
-    if (showSuggestions && suggestions.length > 0) {
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        setSelectedIndex(prev => (prev + 1) % suggestions.length);
-        return;
-      }
-      if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        setSelectedIndex(prev => (prev - 1 + suggestions.length) % suggestions.length);
-        return;
-      }
-      if (e.key === 'Enter' || e.key === 'Tab') {
-        e.preventDefault();
-        insertSuggestion(suggestions[selectedIndex]);
-        return;
-      }
+    // Autocomplete handling when suggestion popup is active
+    if (showSuggestions) {
+      // Escape immediately closes the suggestions window
       if (e.key === 'Escape') {
         e.preventDefault();
         setShowSuggestions(false);
+        hasNavigatedSuggestions.current = false;
         return;
+      }
+
+      // Left or Right arrow cancels suggestion popup and lets cursor move normally
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        setShowSuggestions(false);
+        hasNavigatedSuggestions.current = false;
+        // Do not preventDefault, allowing cursor to move left or right
+      }
+
+      if (suggestions.length > 0) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          hasNavigatedSuggestions.current = true;
+          setSelectedIndex(prev => (prev + 1) % suggestions.length);
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          hasNavigatedSuggestions.current = true;
+          setSelectedIndex(prev => (prev - 1 + suggestions.length) % suggestions.length);
+          return;
+        }
+        if (e.key === 'Tab' || (e.key === 'Enter' && hasNavigatedSuggestions.current)) {
+          e.preventDefault();
+          hasNavigatedSuggestions.current = false;
+          insertSuggestion(suggestions[selectedIndex]);
+          return;
+        }
+        if (e.key === 'Enter') {
+          // User pressed Enter without selecting a suggestion; close menu and allow default newline
+          setShowSuggestions(false);
+          hasNavigatedSuggestions.current = false;
+        }
       }
     }
 
@@ -557,13 +586,31 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
               updateSuggestions();
             }}
             onScroll={handleScroll}
-            onKeyUp={() => {
+            onKeyUp={(e) => {
               updateCursorPosition();
-              updateSuggestions();
+              // Prevent re-triggering autocomplete when navigating with arrows or pressing control keys
+              if ([
+                'Escape',
+                'ArrowLeft',
+                'ArrowRight',
+                'ArrowUp',
+                'ArrowDown',
+                'Home',
+                'End',
+                'PageUp',
+                'PageDown',
+                'Control',
+                'Alt',
+                'Shift',
+                'Meta'
+              ].includes(e.key)) {
+                return;
+              }
             }}
             onClick={() => {
               updateCursorPosition();
-              updateSuggestions();
+              // Clicking elsewhere in editor dismisses suggestions so it doesn't obstruct code
+              setShowSuggestions(false);
             }}
             onSelect={updateCursorPosition}
             onKeyDown={handleKeyDown}
@@ -590,7 +637,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
             >
               <div className="px-2.5 py-1 bg-slate-950 text-[10px] font-semibold text-slate-400 border-b border-slate-800 flex justify-between items-center">
                 <span>Gợi ý cú pháp T-SQL</span>
-                <span className="text-slate-500">Chạm để chọn</span>
+                <span className="text-slate-500 font-mono text-[9px]">Esc / ← / → đóng</span>
               </div>
               <div className="overflow-y-auto max-h-48 py-1">
                 {suggestions.map((item, index) => {

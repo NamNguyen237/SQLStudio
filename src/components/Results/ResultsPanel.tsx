@@ -257,7 +257,7 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({ result, activeDataba
                 <p className="text-slate-200 font-medium">{result.message}</p>
                 <p className="text-slate-500 mt-1">Lệnh đã thay đổi dữ liệu nhưng không trả về bảng kết quả (DML/DDL).</p>
               </div>
-            ) : result.data.length === 0 ? (
+            ) : result.data.length === 0 && result.columns.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full text-slate-500 text-xs py-12">
                 <FileSpreadsheet className="w-8 h-8 mb-2 opacity-40 text-slate-400" />
                 <p>Truy vấn thành công nhưng trả về <strong>0 dòng</strong> kết quả.</p>
@@ -285,33 +285,44 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({ result, activeDataba
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-850">
-                    {processedData.map((row, rowIdx) => (
-                      <tr 
-                        key={rowIdx} 
-                        className="hover:bg-slate-900/60 transition-colors font-mono text-[12.5px] border-b border-slate-850/60"
-                      >
-                        <td className="py-1.5 px-3 text-center text-slate-500 text-[11px] border-r border-slate-850 bg-slate-950/60 tabular-nums">
-                          {rowIdx + 1}
+                    {result.data.length === 0 ? (
+                      <tr>
+                        <td 
+                          colSpan={result.columns.length + 1} 
+                          className="py-8 text-center text-slate-500 italic text-xs font-sans"
+                        >
+                          0 dòng kết quả (bảng dữ liệu chưa có dòng nào khớp điều kiện)
                         </td>
-                        {result.columns.map((col) => {
-                          const val = row[col];
-                          const isNull = val === null || val === undefined;
-                          const isNumber = typeof val === 'number';
-
-                          return (
-                            <td 
-                              key={col} 
-                              className={`py-1.5 px-3 border-r border-slate-850/60 whitespace-nowrap ${
-                                isNull ? 'text-slate-600 italic font-sans text-[11px]' : 
-                                isNumber ? 'text-amber-300 text-right tabular-nums' : 'text-slate-200'
-                              }`}
-                            >
-                              {isNull ? 'NULL' : String(val)}
-                            </td>
-                          );
-                        })}
                       </tr>
-                    ))}
+                    ) : (
+                      processedData.map((row, rowIdx) => (
+                        <tr 
+                          key={rowIdx} 
+                          className="hover:bg-slate-900/60 transition-colors font-mono text-[12.5px] border-b border-slate-850/60"
+                        >
+                          <td className="py-1.5 px-3 text-center text-slate-500 text-[11px] border-r border-slate-850 bg-slate-950/60 tabular-nums">
+                            {rowIdx + 1}
+                          </td>
+                          {result.columns.map((col) => {
+                            const val = row[col];
+                            const isNull = val === null || val === undefined;
+                            const isNumber = typeof val === 'number';
+
+                            return (
+                              <td 
+                                key={col} 
+                                className={`py-1.5 px-3 border-r border-slate-850/60 whitespace-nowrap ${
+                                  isNull ? 'text-slate-600 italic font-sans text-[11px]' : 
+                                  isNumber ? 'text-amber-300 text-right tabular-nums' : 'text-slate-200'
+                                }`}
+                              >
+                                {isNull ? 'NULL' : String(val)}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))
+                    )}
                   </tbody>
                 </table>
               </div>

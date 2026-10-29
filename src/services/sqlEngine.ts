@@ -441,6 +441,18 @@ export class SqlEngineService {
     s = s.replace(/\bVARCHAR\s*\(\s*MAX\s*\)/gi, 'VARCHAR(4000)');
     s = s.replace(/\bNVARCHAR\s*\(\s*MAX\s*\)/gi, 'NVARCHAR(4000)');
     s = s.replace(/\bVARBINARY\s*\(\s*MAX\s*\)/gi, 'VARBINARY(4000)');
+
+    // Support T-SQL style "SELECT [alias] = [column]" by transforming to "SELECT [column] AS [alias]"
+    if (/^\s*SELECT\b/i.test(s)) {
+      const fromIdx = s.search(/\bFROM\b/i);
+      if (fromIdx > -1) {
+        const selectPart = s.substring(0, fromIdx);
+        const restPart = s.substring(fromIdx);
+        const transformedSelect = selectPart.replace(/([a-zA-Z0-9_]+|\[[^\]]+\])\s*=\s*([a-zA-Z0-9_.]+(?:\([^)]*\))?)/g, '$2 AS $1');
+        s = transformedSelect + restPart;
+      }
+    }
+
     return s;
   }
 
@@ -645,7 +657,26 @@ export class SqlEngineService {
       // Result of SELECT
       if (Array.isArray(lastResult)) {
         const rows = lastResult;
-        const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
+        let columns = rows.length > 0 ? Object.keys(rows[0]) : [];
+
+        // If 0 rows were returned (e.g. freshly created empty table), extract defined column names/aliases
+        if (columns.length === 0 && lastSelectQuery) {
+          const fromMatch = lastSelectQuery.match(/^\s*SELECT\s+(?:DISTINCT\s+)?(?:TOP\s+\d+\s+)?([\s\S]+?)\s+FROM\b/i);
+          if (fromMatch) {
+            const rawCols = fromMatch[1].split(',');
+            const extracted = rawCols.map(c => {
+              const asMatch = c.match(/\bAS\s+(?:\[([^\]]+)\]|'([^']+)'|"([^"]+)"|([a-zA-Z0-9_]+))/i);
+              if (asMatch) return asMatch[1] || asMatch[2] || asMatch[3] || asMatch[4];
+              const parts = c.trim().split(/\s+/);
+              const lastPart = parts[parts.length - 1].replace(/^\[|\]$/g, '').replace(/^(?:[a-zA-Z0-9_]+\.)/, '');
+              return lastPart;
+            }).filter(Boolean);
+            if (extracted.length > 0 && extracted[0] !== '*') {
+              columns = extracted;
+            }
+          }
+        }
+
         const plan = this.generateSimulatedPlan(lastSelectQuery || sql, rows.length);
 
         return {
