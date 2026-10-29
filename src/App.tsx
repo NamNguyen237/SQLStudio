@@ -41,6 +41,62 @@ GO
 
 SELECT * FROM SinhVien;`;
 
+const SAMPLE_QLSV_RELATIONSHIPS = `CREATE DATABASE QLSV;
+GO
+USE QLSV;
+GO
+
+CREATE TABLE DMKHOA (
+  MaKH CHAR(2) NOT NULL PRIMARY KEY,
+  TenKH VARCHAR(50)
+);
+GO
+
+CREATE TABLE DMMH (
+  MaMH CHAR(2) NOT NULL PRIMARY KEY,
+  TenMH VARCHAR(50),
+  HeSo INT NOT NULL
+);
+GO
+
+CREATE TABLE DMSV (
+  MaSV CHAR(3) NOT NULL PRIMARY KEY,
+  TenSV VARCHAR(50),
+  Nam BIT,
+  MaKH CHAR(2) NOT NULL,
+  SoMonDK INT,
+  DiemTB FLOAT,
+  CONSTRAINT FK_MaKH FOREIGN KEY(MaKH) REFERENCES DMKHOA(MaKH)
+);
+GO
+
+CREATE TABLE KETQUA (
+  MaSV CHAR(3) NOT NULL,
+  MaMH CHAR(2) NOT NULL,
+  Diem FLOAT,
+  CONSTRAINT PK_KETQUA PRIMARY KEY(MaSV, MaMH),
+  CONSTRAINT FK_MaSV FOREIGN KEY(MaSV) REFERENCES DMSV(MaSV),
+  CONSTRAINT FK_MaMH FOREIGN KEY(MaMH) REFERENCES DMMH(MaMH)
+);
+GO
+
+INSERT INTO DMKHOA (MaKH, TenKH) VALUES ('CN', 'Cong Nghe Thong Tin'), ('KT', 'Kinh Te');
+GO
+INSERT INTO DMMH (MaMH, TenMH, HeSo) VALUES ('CS', 'Co So Du Lieu', 3), ('TR', 'Tri Tue Nhan Tao', 4);
+GO
+INSERT INTO DMSV (MaSV, TenSV, Nam, MaKH, SoMonDK, DiemTB) VALUES 
+('S01', 'Nguyen Van An', 1, 'CN', 2, 8.5),
+('S02', 'Tran Thi Binh', 0, 'CN', 2, 9.0);
+GO
+INSERT INTO KETQUA (MaSV, MaMH, Diem) VALUES 
+('S01', 'CS', 8.5),
+('S01', 'TR', 9.0),
+('S02', 'CS', 9.5);
+GO
+
+SELECT * FROM DMSV;
+GO`;
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<'editor' | 'handbook'>('editor');
   const [activeDatabase, setActiveDatabase] = useState<string>('');
@@ -286,15 +342,12 @@ export default function App() {
           </button>
           <button
             onClick={() => setIsErModalOpen(true)}
-            disabled={schemas.length === 0}
-            className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-md transition-all cursor-pointer touch-manipulation ${
-              schemas.length === 0 ? 'opacity-40 cursor-not-allowed text-slate-500' : 'text-slate-400 hover:text-slate-200'
-            }`}
-            title="Xem sơ đồ liên kết thực thể ERD"
+            className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-md transition-all cursor-pointer touch-manipulation text-slate-400 hover:text-slate-200 hover:bg-slate-800/60"
+            title="Xem sơ đồ liên kết quan hệ các bảng (Microsoft Access / SSMS Relationships)"
           >
-            <Network className="w-3.5 h-3.5" />
-            <span className="hidden md:inline">Sơ đồ ERD</span>
-            <span className="md:hidden text-[11px]">ERD</span>
+            <Network className="w-3.5 h-3.5 text-sky-400" />
+            <span className="hidden md:inline">Sơ đồ quan hệ (Access)</span>
+            <span className="md:hidden text-[11px]">Sơ đồ</span>
           </button>
         </nav>
 
@@ -428,12 +481,15 @@ export default function App() {
         </main>
       </div>
 
-      {/* ER Diagram Modal */}
+      {/* ER Diagram Modal (Microsoft Access / SSMS Style) */}
       <ErDiagramModal
         isOpen={isErModalOpen}
         onClose={() => setIsErModalOpen(false)}
         activeDatabaseId={activeDatabase}
         schemas={schemas}
+        onInjectSample={() => {
+          handleInjectSql(SAMPLE_QLSV_RELATIONSHIPS, true);
+        }}
       />
 
       {/* Quick Syntax Guide Modal */}

@@ -119,12 +119,11 @@ export const DatabaseExplorer: React.FC<DatabaseExplorerProps> = ({
         <div className="grid grid-cols-2 gap-1.5 mt-2">
           <button
             onClick={onOpenErDiagram}
-            disabled={schemas.length === 0}
-            className="py-1 px-2 flex items-center justify-center gap-1.5 bg-slate-800 hover:bg-slate-750 disabled:opacity-40 disabled:cursor-not-allowed border border-slate-700 text-slate-300 rounded text-[11px] font-medium transition-colors cursor-pointer"
-            title="Xem sơ đồ thực thể liên kết khóa chính - ngoại giữa các bảng"
+            className="py-1 px-2 flex items-center justify-center gap-1.5 bg-slate-800 hover:bg-slate-750 border border-slate-700 text-slate-300 hover:text-white rounded text-[11px] font-medium transition-colors cursor-pointer"
+            title="Xem sơ đồ quan hệ các bảng kiểu Microsoft Access & SSMS"
           >
             <Network className="w-3.5 h-3.5 text-sky-400" />
-            <span>Sơ đồ ERD</span>
+            <span>Sơ đồ Access</span>
           </button>
 
           <button
