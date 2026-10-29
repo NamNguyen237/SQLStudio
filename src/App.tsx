@@ -259,7 +259,9 @@ export default function App() {
       executionTimeMs: 1,
       message: 'Đã làm sạch toàn bộ môi trường. Chưa có CSDL nào được tạo.',
       queryType: 'OTHER',
-      activeDatabase: ''
+      activeDatabase: '',
+      resultSets: [],
+      messages: ['Đã làm sạch toàn bộ môi trường.']
     });
   };
 

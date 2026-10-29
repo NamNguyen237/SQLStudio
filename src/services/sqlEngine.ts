@@ -12,12 +12,22 @@ export interface TableSchemaInfo {
   name: string;
   rowCount: number;
   columns: ColumnDefinition[];
+  isView?: boolean;
 }
 
 export interface DatabaseInfo {
   name: string;
   isSystem?: boolean;
   tablesCount: number;
+}
+
+export interface SingleResultSet {
+  id: string;
+  statement: string;
+  data: Record<string, any>[];
+  columns: string[];
+  rowCount: number;
+  executionPlan?: ExecutionPlanNode;
 }
 
 export interface QueryExecutionResult {
@@ -30,6 +40,8 @@ export interface QueryExecutionResult {
   queryType: 'SELECT' | 'INSERT' | 'UPDATE' | 'DELETE' | 'CREATE' | 'ALTER' | 'DROP' | 'USE' | 'OTHER';
   activeDatabase: string;
   executionPlan?: ExecutionPlanNode;
+  resultSets: SingleResultSet[];
+  messages: string[];
 }
 
 export interface ExecutionPlanNode {
@@ -267,8 +279,10 @@ export class SqlEngineService {
 
         const trimmedCurrent = currentStmt.trim();
         const waitingForIfBody = /^\s*IF\b/i.test(trimmedCurrent) && !hasIfBody(trimmedCurrent);
+        const waitingForViewBody = /^(?:CREATE\s+(?:OR\s+ALTER\s+)?VIEW|ALTER\s+VIEW)\b/i.test(trimmedCurrent) &&
+          !/\bAS\s+[\s\S]*?\bSELECT\b/i.test(trimmedCurrent);
 
-        const startsNewStmt = parenDepth === 0 && trimmedCurrent.length > 0 && !waitingForIfBody &&
+        const startsNewStmt = parenDepth === 0 && trimmedCurrent.length > 0 && !waitingForIfBody && !waitingForViewBody &&
           /^(CREATE|ALTER|DROP|USE|SELECT|INSERT|UPDATE|DELETE|IF|TRUNCATE|PRINT|SET|EXEC)\b/i.test(trimmedLine);
 
         if (startsNewStmt) {
@@ -293,16 +307,41 @@ export class SqlEngineService {
 
     const finalStmts: string[] = [];
     for (const s of statements) {
-      const parts = s.split(';');
-      for (const p of parts) {
-        const trimmed = p.trim();
-        if (trimmed) {
-          finalStmts.push(trimmed);
+      // Split by semicolon outside string literals
+      let cur = '';
+      let inStr = false;
+      for (let i = 0; i < s.length; i++) {
+        const ch = s[i];
+        if (ch === "'" && (i === 0 || s[i - 1] !== '\\')) {
+          inStr = !inStr;
         }
+        if (ch === ';' && !inStr) {
+          if (cur.trim()) finalStmts.push(cur.trim());
+          cur = '';
+        } else {
+          cur += ch;
+        }
+      }
+      if (cur.trim()) {
+        finalStmts.push(cur.trim());
       }
     }
 
     return finalStmts;
+  }
+
+  private extractColumnsFromSelectQuery(sql: string): string[] {
+    const fromMatch = sql.match(/^\s*SELECT\s+(?:DISTINCT\s+)?(?:TOP\s+\d+\s+)?([\s\S]+?)\s+FROM\b/i);
+    if (!fromMatch) return [];
+    const rawCols = fromMatch[1].split(',');
+    const extracted = rawCols.map(c => {
+      const asMatch = c.match(/\bAS\s+(?:\[([^\]]+)\]|'([^']+)'|"([^"]+)"|([a-zA-Z0-9_]+))/i);
+      if (asMatch) return asMatch[1] || asMatch[2] || asMatch[3] || asMatch[4];
+      const parts = c.trim().split(/\s+/);
+      const lastPart = parts[parts.length - 1].replace(/^\[|\]$/g, '').replace(/^(?:[a-zA-Z0-9_]+\.)/, '');
+      return lastPart;
+    }).filter(Boolean);
+    return extracted.length > 0 && extracted[0] !== '*' ? extracted : [];
   }
 
   private extractColumnsFromCreateTable(stmt: string): { tableName: string; columns: ColumnDefinition[] } | null {
@@ -469,16 +508,18 @@ export class SqlEngineService {
         executionTimeMs: 0,
         message: 'Lệnh rỗng hoặc chỉ chứa chú thích. Không có truy vấn nào được thực thi.',
         queryType: 'OTHER',
-        activeDatabase: this.activeDatabase
+        activeDatabase: this.activeDatabase,
+        resultSets: [],
+        messages: ['Không có truy vấn nào được thực thi.']
       };
     }
 
-    try {
-      let lastResult: any = null;
-      let totalAffected = 0;
-      let lastQueryType: QueryExecutionResult['queryType'] = 'OTHER';
-      let lastSelectQuery = '';
+    const resultSets: SingleResultSet[] = [];
+    const messages: string[] = [];
+    let totalAffected = 0;
+    let lastQueryType: QueryExecutionResult['queryType'] = 'OTHER';
 
+    try {
       for (const rawStmt of statements) {
         const stmt = this.preprocessStatement(rawStmt);
         if (!stmt) continue;
@@ -491,7 +532,7 @@ export class SqlEngineService {
           const targetDb = useMatch[1];
           this.setActiveDatabase(targetDb);
           lastQueryType = 'USE';
-          lastResult = `Đã chuyển sang cơ sở dữ liệu: ${targetDb}`;
+          messages.push(`Đã chuyển sang cơ sở dữ liệu: ${targetDb}`);
           continue;
         }
 
@@ -512,7 +553,7 @@ export class SqlEngineService {
             }
           }
           lastQueryType = 'DROP';
-          lastResult = `Cơ sở dữ liệu '${delDb}' đã được xóa (nếu tồn tại).`;
+          messages.push(`Cơ sở dữ liệu '${delDb}' đã được xóa (nếu tồn tại).`);
           continue;
         }
 
@@ -531,7 +572,7 @@ export class SqlEngineService {
             this.tableMetadata[newDb] = {};
           }
           lastQueryType = 'CREATE';
-          lastResult = `Cơ sở dữ liệu '${newDb}' đã được khởi tạo thành công.`;
+          messages.push(`Cơ sở dữ liệu '${newDb}' đã được khởi tạo thành công.`);
           continue;
         }
 
@@ -550,11 +591,65 @@ export class SqlEngineService {
             this.setActiveDatabase('master');
           }
           lastQueryType = 'DROP';
-          lastResult = `Cơ sở dữ liệu '${delDb}' đã được xóa thành công.`;
+          messages.push(`Cơ sở dữ liệu '${delDb}' đã được xóa thành công.`);
           continue;
         }
 
-        // 5. Handle IF EXISTS ... DROP TABLE [name] / IF OBJECT_ID(...) IS NOT NULL DROP TABLE
+        // 5. Handle IF EXISTS ... DROP VIEW / IF OBJECT_ID(...) ... DROP VIEW
+        const ifDropView = stmt.match(/^IF\s+(?:EXISTS\s*\([\s\S]*?\)|OBJECT_ID\([^)]+\)\s+IS\s+NOT\s+NULL)\s+DROP\s+VIEW\s+(?:IF\s+EXISTS\s+)?(?:\[?dbo\]?\.)?\[?([a-zA-Z0-9_]+)\]?/i);
+        if (ifDropView) {
+          const delView = ifDropView[1];
+          const dbKey = this.activeDatabase || '_scratchpad_';
+          try {
+            alasql(`USE ${dbKey};`);
+            alasql(`DROP VIEW IF EXISTS ${delView};`);
+          } catch {
+            // ignore
+          }
+          lastQueryType = 'DROP';
+          messages.push(`Khung nhìn (View) '${delView}' đã được xóa (nếu tồn tại).`);
+          continue;
+        }
+
+        // 6. Handle DROP VIEW [IF EXISTS] [name]
+        const dropViewMatch = stmt.match(/^DROP\s+VIEW\s+(?:IF\s+EXISTS\s+)?(?:\[?dbo\]?\.)?\[?([a-zA-Z0-9_]+)\]?/i);
+        if (dropViewMatch) {
+          const delView = dropViewMatch[1];
+          const dbKey = this.activeDatabase || '_scratchpad_';
+          try {
+            alasql(`USE ${dbKey};`);
+            alasql(`DROP VIEW IF EXISTS ${delView};`);
+          } catch {
+            // ignore
+          }
+          lastQueryType = 'DROP';
+          messages.push(`Khung nhìn (View) '${delView}' đã được xóa thành công.`);
+          continue;
+        }
+
+        // 7. Handle CREATE [OR ALTER] VIEW / ALTER VIEW
+        const viewMatch = stmt.match(/^(?:CREATE\s+(?:OR\s+ALTER\s+)?VIEW|ALTER\s+VIEW)\s+(?:\[?dbo\]?\.)?\[?([a-zA-Z0-9_]+)\]?(?:\s*\([^)]*\))?\s+AS\s+([\s\S]+)$/i);
+        if (viewMatch) {
+          const viewName = viewMatch[1];
+          const viewBody = viewMatch[2].trim();
+          const dbKey = this.activeDatabase || '_scratchpad_';
+          try {
+            alasql(`USE ${dbKey};`);
+            try {
+              alasql(`DROP VIEW IF EXISTS ${viewName};`);
+            } catch {
+              // ignore
+            }
+            alasql(`CREATE VIEW ${viewName} AS ${viewBody};`);
+            lastQueryType = 'CREATE';
+            messages.push(`Khung nhìn (View) '${viewName}' đã được tạo/cập nhật thành công.`);
+            continue;
+          } catch (vErr: any) {
+            throw new Error(`Lỗi khởi tạo View '${viewName}': ${vErr.message || vErr}`);
+          }
+        }
+
+        // 8. Handle IF EXISTS ... DROP TABLE [name] / IF OBJECT_ID(...) IS NOT NULL DROP TABLE
         const ifDropTbl = stmt.match(/^IF\s+(?:EXISTS\s*\([\s\S]*?\)|OBJECT_ID\([^)]+\)\s+IS\s+NOT\s+NULL)\s+DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:\[?dbo\]?\.)?\[?([a-zA-Z0-9_]+)\]?/i);
         if (ifDropTbl) {
           const delTbl = ifDropTbl[1];
@@ -569,49 +664,94 @@ export class SqlEngineService {
             delete this.tableMetadata[dbKey][delTbl];
           }
           lastQueryType = 'DROP';
-          lastResult = `Bảng '${delTbl}' đã được xóa (nếu tồn tại).`;
+          messages.push(`Bảng '${delTbl}' đã được xóa (nếu tồn tại).`);
           continue;
         }
 
-        // 6. Handle ALTER TABLE constraints (ADD CONSTRAINT PK/FK/CHECK)
+        // 9. Handle DROP TABLE
+        const dropTblMatch = stmt.match(/^DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:\[?dbo\]?\.)?\[?([a-zA-Z0-9_]+)\]?/i);
+        if (dropTblMatch) {
+          const delTbl = dropTblMatch[1];
+          const dbKey = this.activeDatabase || '_scratchpad_';
+          try {
+            alasql(`USE ${dbKey};`);
+            alasql(`DROP TABLE IF EXISTS ${delTbl};`);
+          } catch {
+            // ignore
+          }
+          if (this.tableMetadata[dbKey]) {
+            delete this.tableMetadata[dbKey][delTbl];
+          }
+          lastQueryType = 'DROP';
+          messages.push(`Bảng '${delTbl}' đã được xóa thành công.`);
+          continue;
+        }
+
+        // 10. Handle ALTER TABLE constraints (ADD CONSTRAINT PK/FK/CHECK)
         if (/^ALTER\s+TABLE\b/i.test(stmt) && /(?:CONSTRAINT|PRIMARY\s+KEY|FOREIGN\s+KEY|CHECK)\b/i.test(stmt)) {
           this.handleAlterTableConstraints(rawStmt);
           lastQueryType = 'ALTER';
           const tblMatch = stmt.match(/ALTER\s+TABLE\s+(?:\[?dbo\]?\.)?\[?([a-zA-Z0-9_]+)\]?/i);
-          lastResult = `Đã thiết lập ràng buộc (Constraint) cho bảng '${tblMatch ? tblMatch[1] : ''}' thành công.`;
+          messages.push(`Đã thiết lập ràng buộc (Constraint) cho bảng '${tblMatch ? tblMatch[1] : ''}' thành công.`);
           continue;
         }
 
-        // 7. Handle SELECT queries from system catalogs like sys.databases
+        // 11. Handle PRINT statement
+        const printMatch = stmt.match(/^PRINT\s+(?:N?'((?:''|[^'])*)'|([a-zA-Z0-9_]+))/i);
+        if (printMatch) {
+          const printMsg = printMatch[1] ?? printMatch[2] ?? '';
+          messages.push(printMsg);
+          continue;
+        }
+
+        // 12. Handle SELECT queries from system catalogs like sys.databases
         if (/^SELECT\b/i.test(stmt) && /FROM\s+(?:sys\.databases|sysdatabases)\b/i.test(stmt)) {
           const rows = Array.from(this.userDatabases).map((name, i) => ({
             database_id: i + 1,
             name,
             create_date: new Date().toISOString()
           }));
-          lastResult = rows;
+          const cols = rows.length > 0 ? Object.keys(rows[0]) : ['database_id', 'name', 'create_date'];
+          const plan = this.generateSimulatedPlan(stmt, rows.length);
+          resultSets.push({
+            id: `result-${resultSets.length + 1}`,
+            statement: rawStmt.trim(),
+            data: rows,
+            columns: cols,
+            rowCount: rows.length,
+            executionPlan: plan
+          });
+          messages.push(`SELECT: Trả về ${rows.length} hàng (sys.databases).`);
           lastQueryType = 'SELECT';
-          lastSelectQuery = stmt;
           continue;
         }
 
-        // 8. Handle SELECT queries from sys.tables
+        // 13. Handle SELECT queries from sys.tables
         if (/^SELECT\b/i.test(stmt) && /FROM\s+(?:sys\.tables|sysobjects)\b/i.test(stmt)) {
           const dbKey = this.activeDatabase || '_scratchpad_';
           const tables = alasql.databases[dbKey]?.tables ? Object.keys(alasql.databases[dbKey].tables) : [];
           const rows = tables.map((name, i) => ({
             object_id: i + 1,
             name,
-            type: 'U',
-            type_desc: 'USER_TABLE'
+            type: (alasql.databases[dbKey]?.tables[name] as any)?.view ? 'V' : 'U',
+            type_desc: (alasql.databases[dbKey]?.tables[name] as any)?.view ? 'VIEW' : 'USER_TABLE'
           }));
-          lastResult = rows;
+          const cols = rows.length > 0 ? Object.keys(rows[0]) : ['object_id', 'name', 'type', 'type_desc'];
+          const plan = this.generateSimulatedPlan(stmt, rows.length);
+          resultSets.push({
+            id: `result-${resultSets.length + 1}`,
+            statement: rawStmt.trim(),
+            data: rows,
+            columns: cols,
+            rowCount: rows.length,
+            executionPlan: plan
+          });
+          messages.push(`SELECT: Trả về ${rows.length} hàng (sys.tables).`);
           lastQueryType = 'SELECT';
-          lastSelectQuery = stmt;
           continue;
         }
 
-        // 9. Handle CREATE TABLE metadata extraction & execution
+        // 14. Handle CREATE TABLE metadata extraction & execution
         if (/^CREATE\s+TABLE/i.test(stmt)) {
           const meta = this.extractColumnsFromCreateTable(rawStmt);
           if (meta) {
@@ -630,90 +770,70 @@ export class SqlEngineService {
           lastQueryType = 'DELETE';
         } else if (/^ALTER/i.test(firstWord)) {
           lastQueryType = 'ALTER';
-        } else if (/^DROP\s+TABLE/i.test(stmt)) {
-          lastQueryType = 'DROP';
-          const dropTblMatch = stmt.match(/DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?\[?([a-zA-Z0-9_]+)\]?/i);
-          const dbKey = this.activeDatabase || '_scratchpad_';
-          if (dropTblMatch && this.tableMetadata[dbKey]) {
-            delete this.tableMetadata[dbKey][dropTblMatch[1]];
-          }
         } else if (['SELECT', 'WITH'].includes(firstWord)) {
           lastQueryType = 'SELECT';
-          lastSelectQuery = stmt;
         }
 
         // Ensure we are executing inside active database
         const execDb = this.activeDatabase || '_scratchpad_';
         alasql(`USE ${execDb};`);
-        lastResult = alasql(stmt);
+        const stmtRes: any = alasql(stmt);
 
-        if (typeof lastResult === 'number') {
-          totalAffected += lastResult;
+        if (Array.isArray(stmtRes)) {
+          let columns = stmtRes.length > 0 ? Object.keys(stmtRes[0]) : [];
+          if (columns.length === 0) {
+            columns = this.extractColumnsFromSelectQuery(stmt);
+          }
+          const plan = this.generateSimulatedPlan(stmt, stmtRes.length);
+          resultSets.push({
+            id: `result-${resultSets.length + 1}`,
+            statement: rawStmt.trim(),
+            data: stmtRes,
+            columns,
+            rowCount: stmtRes.length,
+            executionPlan: plan
+          });
+          const snippet = rawStmt.trim().replace(/\s+/g, ' ').substring(0, 60);
+          messages.push(`SELECT: ${stmtRes.length} hàng từ [${snippet}]`);
+          lastQueryType = 'SELECT';
+        } else if (typeof stmtRes === 'number') {
+          totalAffected += stmtRes;
+          const act = /^INSERT/i.test(firstWord) ? 'chèn' : /^UPDATE/i.test(firstWord) ? 'cập nhật' : /^DELETE/i.test(firstWord) ? 'xóa' : 'thực thi';
+          messages.push(`(${stmtRes} hàng được ${act} thành công).`);
+        } else if (/^CREATE\s+TABLE/i.test(stmt)) {
+          const matchT = rawStmt.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:\[?dbo\]?\.)?\[?([a-zA-Z0-9_]+)\]?/i);
+          const tName = matchT ? matchT[1] : '';
+          messages.push(`Bảng '${tName}' đã được tạo thành công.`);
         }
       }
 
       const durationMs = Math.round((performance.now() - startTime) * 10) / 10;
-
-      // Result of SELECT
-      if (Array.isArray(lastResult)) {
-        const rows = lastResult;
-        let columns = rows.length > 0 ? Object.keys(rows[0]) : [];
-
-        // If 0 rows were returned (e.g. freshly created empty table), extract defined column names/aliases
-        if (columns.length === 0 && lastSelectQuery) {
-          const fromMatch = lastSelectQuery.match(/^\s*SELECT\s+(?:DISTINCT\s+)?(?:TOP\s+\d+\s+)?([\s\S]+?)\s+FROM\b/i);
-          if (fromMatch) {
-            const rawCols = fromMatch[1].split(',');
-            const extracted = rawCols.map(c => {
-              const asMatch = c.match(/\bAS\s+(?:\[([^\]]+)\]|'([^']+)'|"([^"]+)"|([a-zA-Z0-9_]+))/i);
-              if (asMatch) return asMatch[1] || asMatch[2] || asMatch[3] || asMatch[4];
-              const parts = c.trim().split(/\s+/);
-              const lastPart = parts[parts.length - 1].replace(/^\[|\]$/g, '').replace(/^(?:[a-zA-Z0-9_]+\.)/, '');
-              return lastPart;
-            }).filter(Boolean);
-            if (extracted.length > 0 && extracted[0] !== '*') {
-              columns = extracted;
-            }
-          }
-        }
-
-        const plan = this.generateSimulatedPlan(lastSelectQuery || sql, rows.length);
-
-        return {
-          success: true,
-          data: rows,
-          columns,
-          rowCount: rows.length,
-          executionTimeMs: Math.max(durationMs, 1),
-          message: `Lệnh đã hoàn thành thành công. (${rows.length} hàng được trả về)`,
-          queryType: 'SELECT',
-          activeDatabase: this.activeDatabase,
-          executionPlan: plan
-        };
-      }
-
-      // Result of DDL / DML / USE
-      let message = 'Lệnh đã hoàn thành thành công.';
-      if (typeof lastResult === 'string') {
-        message = lastResult;
-      } else if (lastQueryType === 'INSERT' || lastQueryType === 'UPDATE' || lastQueryType === 'DELETE') {
-        const count = typeof lastResult === 'number' ? lastResult : totalAffected;
-        message = `(${count} hàng bị ảnh hưởng). Thời gian thực thi: ${Math.max(durationMs, 1)}ms.`;
-      } else if (lastQueryType === 'CREATE') {
-        message = 'Đối tượng (bảng/cơ sở dữ liệu) đã được tạo thành công.';
-      } else if (lastQueryType === 'DROP') {
-        message = 'Đối tượng đã được xóa thành công.';
+      let summaryMessage = '';
+      if (resultSets.length > 1) {
+        const totalRows = resultSets.reduce((sum, r) => sum + r.rowCount, 0);
+        summaryMessage = `Lệnh đã hoàn thành. Đã xuất ${resultSets.length} bảng kết quả liên tiếp (Tổng ${totalRows} hàng).`;
+      } else if (resultSets.length === 1) {
+        summaryMessage = `Lệnh đã hoàn thành thành công. (${resultSets[0].rowCount} hàng được trả về)`;
+      } else if (totalAffected > 0) {
+        summaryMessage = `(${totalAffected} hàng bị ảnh hưởng). Thời gian thực thi: ${Math.max(durationMs, 1)}ms.`;
+      } else if (messages.length > 0) {
+        summaryMessage = messages[messages.length - 1];
+      } else {
+        summaryMessage = 'Lệnh đã hoàn thành thành công.';
       }
 
       return {
         success: true,
-        data: null,
-        columns: [],
-        rowCount: typeof lastResult === 'number' ? lastResult : 0,
+        data: resultSets.length > 0 ? resultSets[0].data : null,
+        columns: resultSets.length > 0 ? resultSets[0].columns : [],
+        rowCount: resultSets.reduce((sum, r) => sum + r.rowCount, 0) || totalAffected,
         executionTimeMs: Math.max(durationMs, 1),
-        message,
-        queryType: lastQueryType,
-        activeDatabase: this.activeDatabase
+        message: summaryMessage,
+        queryType: resultSets.length > 0 ? 'SELECT' : lastQueryType,
+        activeDatabase: this.activeDatabase,
+        executionPlan: resultSets.length > 0 ? resultSets[0].executionPlan : undefined,
+        resultSets,
+        messages
       };
 
     } catch (err: any) {
@@ -723,13 +843,15 @@ export class SqlEngineService {
 
       return {
         success: false,
-        data: null,
-        columns: [],
-        rowCount: 0,
+        data: resultSets.length > 0 ? resultSets[0].data : null,
+        columns: resultSets.length > 0 ? resultSets[0].columns : [],
+        rowCount: resultSets.reduce((sum, r) => sum + r.rowCount, 0),
         executionTimeMs: Math.max(durationMs, 1),
         message: friendlyError,
         queryType: 'OTHER',
-        activeDatabase: this.activeDatabase
+        activeDatabase: this.activeDatabase,
+        resultSets,
+        messages: [...messages, `Lỗi: ${friendlyError}`]
       };
     }
   }
@@ -798,10 +920,13 @@ export class SqlEngineService {
           }
         }
 
+        const isView = !!(targetDb.tables[tName] as any)?.view;
+
         schemas.push({
           name: tName,
           rowCount: count,
-          columns: cols || []
+          columns: cols || [],
+          isView
         });
       }
 

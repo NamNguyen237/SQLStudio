@@ -36,6 +36,8 @@ const TSQL_KEYWORDS: SuggestionItem[] = [
   { label: 'SET', kind: 'keyword', detail: 'Update assignment', insertText: 'SET ' },
   { label: 'DELETE FROM', kind: 'keyword', detail: 'T-SQL DML', insertText: 'DELETE FROM ' },
   { label: 'CREATE TABLE', kind: 'keyword', detail: 'T-SQL DDL', insertText: 'CREATE TABLE ' },
+  { label: 'CREATE VIEW', kind: 'snippet', detail: 'T-SQL Khung nhìn', insertText: 'CREATE VIEW TenView AS\nSELECT \nFROM \nGO' },
+  { label: 'DROP VIEW', kind: 'keyword', detail: 'T-SQL Xóa khung nhìn', insertText: 'DROP VIEW IF EXISTS ' },
   { label: 'PRIMARY KEY', kind: 'keyword', detail: 'Constraint', insertText: 'PRIMARY KEY' },
   { label: 'FOREIGN KEY', kind: 'keyword', detail: 'Constraint', insertText: 'FOREIGN KEY ' },
   { label: 'REFERENCES', kind: 'keyword', detail: 'FK Reference', insertText: 'REFERENCES ' },

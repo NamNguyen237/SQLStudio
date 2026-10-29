@@ -29,3 +29,70 @@
     background: #334155;
   }
 }
+
+/* Print Styles for SQL Result Tables */
+@media print {
+  body {
+    background: #ffffff !important;
+    color: #0f172a !important;
+  }
+
+  .no-print,
+  nav,
+  header,
+  aside,
+  .print-hidden {
+    display: none !important;
+  }
+
+  .print-only {
+    display: block !important;
+  }
+
+  .print-container {
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    height: auto !important;
+    background: #ffffff !important;
+    color: #0f172a !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    box-shadow: none !important;
+    border: none !important;
+  }
+
+  .print-page-break {
+    page-break-inside: avoid;
+    break-inside: avoid;
+    margin-bottom: 24px;
+  }
+
+  table {
+    border-collapse: collapse !important;
+    width: 100% !important;
+    color: #0f172a !important;
+  }
+
+  th {
+    background-color: #f1f5f9 !important;
+    color: #0f172a !important;
+    border: 1px solid #cbd5e1 !important;
+    font-weight: 600 !important;
+    padding: 6px 8px !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  td {
+    border: 1px solid #e2e8f0 !important;
+    padding: 5px 8px !important;
+    color: #0f172a !important;
+  }
+
+  tr:nth-child(even) td {
+    background-color: #f8fafc !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+}

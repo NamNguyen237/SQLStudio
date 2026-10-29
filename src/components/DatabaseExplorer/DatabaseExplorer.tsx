@@ -14,7 +14,8 @@ import {
   Network, 
   Trash2,
   Download,
-  X
+  X,
+  Eye
 } from 'lucide-react';
 import { TableSchemaInfo, DatabaseInfo } from '../../services/sqlEngine';
 
@@ -181,8 +182,17 @@ export const DatabaseExplorer: React.FC<DatabaseExplorerProps> = ({
                     ) : (
                       <ChevronRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                     )}
-                    <Table className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                    {table.isView ? (
+                      <Eye className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    ) : (
+                      <Table className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                    )}
                     <span className="font-semibold text-slate-200 truncate font-mono">{table.name}</span>
+                    {table.isView && (
+                      <span className="text-[9px] px-1 py-0.2 bg-emerald-950 text-emerald-300 border border-emerald-800/80 rounded font-mono uppercase font-bold shrink-0">
+                        VIEW
+                      </span>
+                    )}
                   </div>
 
                   <div className="flex items-center gap-1 shrink-0">
@@ -203,32 +213,34 @@ export const DatabaseExplorer: React.FC<DatabaseExplorerProps> = ({
                           onInjectSql(`SELECT * FROM ${table.name};`, true);
                         }}
                         className="flex items-center gap-1 px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-sky-300 rounded cursor-pointer transition-colors"
-                        title="Xem toàn bộ dữ liệu bảng"
+                        title={table.isView ? "Xem dữ liệu của View" : "Xem toàn bộ dữ liệu bảng"}
                       >
                         <Play className="w-2.5 h-2.5 fill-current" />
                         <span>SELECT *</span>
                       </button>
 
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          const colList = table.columns.map(c => c.name).join(', ');
-                          onInjectSql(`INSERT INTO ${table.name} (${colList})\nVALUES (...);`, false);
-                        }}
-                        className="flex items-center gap-1 px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded cursor-pointer transition-colors"
-                        title="Tạo câu lệnh INSERT mẫu"
-                      >
-                        <Code className="w-2.5 h-2.5" />
-                        <span>INSERT</span>
-                      </button>
+                      {!table.isView && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const colList = table.columns.map(c => c.name).join(', ');
+                            onInjectSql(`INSERT INTO ${table.name} (${colList})\nVALUES (...);`, false);
+                          }}
+                          className="flex items-center gap-1 px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded cursor-pointer transition-colors"
+                          title="Tạo câu lệnh INSERT mẫu"
+                        >
+                          <Code className="w-2.5 h-2.5" />
+                          <span>INSERT</span>
+                        </button>
+                      )}
 
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          onInjectSql(`DROP TABLE ${table.name};`, false);
+                          onInjectSql(table.isView ? `DROP VIEW ${table.name};` : `DROP TABLE ${table.name};`, false);
                         }}
                         className="flex items-center gap-1 px-1.5 py-0.5 bg-slate-850 hover:bg-rose-950 text-slate-400 hover:text-rose-400 rounded cursor-pointer transition-colors ml-auto"
-                        title="Tạo lệnh xóa bảng"
+                        title={table.isView ? "Tạo lệnh xóa View" : "Tạo lệnh xóa bảng"}
                       >
                         <Trash2 className="w-2.5 h-2.5" />
                       </button>

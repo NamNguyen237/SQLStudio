@@ -565,5 +565,81 @@ SELECT
 FROM SinhVien;`
       }
     ]
+  },
+  {
+    id: 'ch-09-views-multitable',
+    title: 'Chương 9: Khung nhìn (VIEW) & In liên tiếp nhiều bảng',
+    description: 'Tạo bảng ảo (VIEW) bảo mật dữ liệu và chạy nhiều câu SELECT liên tiếp để in nhiều bảng kết quả.',
+    iconName: 'Layers',
+    lessons: [
+      {
+        id: 'lesson-9-1',
+        chapterId: 'ch-09-views-multitable',
+        title: '1. Khởi tạo Khung nhìn (CREATE VIEW)',
+        concept: 'VIEW là một bảng ảo (virtual table) được lưu trữ dưới dạng một câu truy vấn SELECT định sẵn. Khi truy vấn VIEW, dữ liệu thực tế sẽ được lấy trực tiếp từ các bảng gốc.',
+        syntax: `CREATE VIEW [TenView] AS
+SELECT [Cot1], [Cot2]
+FROM [BangGoc]
+WHERE [DieuKien];`,
+        explanation: 'View giúp đơn giản hóa các truy vấn phức tạp (như phép JOIN nhiều bảng), ẩn đi các cột nhạy cảm, và có thể tái sử dụng dễ dàng như một bảng thật.',
+        codeSnippet: `-- Bước 1: Tạo Khung nhìn tổng hợp thông tin sinh viên kèm tên khoa
+CREATE VIEW View_DSSV_Khoa AS
+SELECT 
+  DMSV.MaSV,
+  DMSV.TenSV,
+  DMKHOA.TenKH,
+  DMSV.DiemTB
+FROM DMSV
+JOIN DMKHOA ON DMSV.MaKH = DMKHOA.MaKH;
+GO
+
+-- Bước 2: Truy vấn trực tiếp từ View vừa tạo
+SELECT * FROM View_DSSV_Khoa WHERE DiemTB >= 8.0;`
+      },
+      {
+        id: 'lesson-9-2',
+        chapterId: 'ch-09-views-multitable',
+        title: '2. In liên tiếp nhiều bảng (Multiple SELECT in Batch)',
+        concept: 'Trong SQL Server và hệ thống quản trị CSDL, bạn có thể chạy một kịch bản gồm nhiều câu lệnh SELECT liên tiếp. Trình biên dịch sẽ trả về lần lượt từng bảng kết quả theo đúng thứ tự thực thi.',
+        syntax: `SELECT * FROM [Bang1];
+SELECT * FROM [Bang2];
+SELECT * FROM [View3];`,
+        explanation: 'Mỗi câu lệnh SELECT sẽ tạo ra một bảng dữ liệu riêng biệt. Bạn có thể xem liên tiếp, tải từng bảng CSV, sao chép Markdown hoặc bấm nút In kết quả để in tất cả bảng ra giấy / xuất PDF.',
+        codeSnippet: `-- In liên tiếp 3 bảng danh mục trong cùng một lần chạy F5:
+-- 1. Bảng Khoa
+SELECT MaKH, TenKH FROM DMKHOA;
+
+-- 2. Bảng Môn học
+SELECT MaMH, TenMH, HeSo FROM DMMH;
+
+-- 3. Bảng Sinh viên có điểm TB >= 8.5
+SELECT MaSV, TenSV, MaKH, DiemTB 
+FROM DMSV 
+WHERE DiemTB >= 8.5;`
+      },
+      {
+        id: 'lesson-9-3',
+        chapterId: 'ch-09-views-multitable',
+        title: '3. Xóa và Cập nhật Khung nhìn (DROP & ALTER VIEW)',
+        concept: 'Khi cần thay đổi câu lệnh SELECT bên trong View, ta dùng ALTER VIEW hoặc DROP VIEW trước khi tạo lại.',
+        syntax: `DROP VIEW IF EXISTS [TenView];
+GO
+CREATE VIEW [TenView] AS ...;`,
+        explanation: 'DROP VIEW chỉ xóa định nghĩa câu truy vấn ảo, hoàn toàn không làm mất dữ liệu của các bảng gốc.',
+        codeSnippet: `-- Xóa view cũ nếu đã tồn tại để tránh xung đột
+DROP VIEW IF EXISTS View_DSSV_Khoa;
+GO
+
+-- Tạo lại view với điều kiện lọc mới
+CREATE VIEW View_DSSV_Khoa AS
+SELECT MaSV, TenSV, MaKH, DiemTB
+FROM DMSV
+WHERE DiemTB >= 5.0;
+GO
+
+-- Kiểm tra lại view
+SELECT * FROM View_DSSV_Khoa;`
+      }
+    ]
   }
 ];
