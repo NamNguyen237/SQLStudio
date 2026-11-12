@@ -10,7 +10,11 @@ import {
   Download,
   Undo2,
   Redo2,
-  X
+  X,
+  Save,
+  ShieldCheck,
+  ShieldAlert,
+  HardDrive
 } from 'lucide-react';
 import { getSuggestions, SuggestionItem } from '../../services/autocomplete';
 import { formatSql } from '../../utils/sqlFormatter';
@@ -22,6 +26,13 @@ interface SqlEditorProps {
   isExecuting?: boolean;
   activeDatabase: string;
   queryHistory: string[];
+  // IndexedDB Auto-save & Page Protection props
+  onManualSave?: () => void;
+  saveStatus?: 'saved' | 'saving' | 'unsaved';
+  autoSaveEnabled?: boolean;
+  onToggleAutoSave?: () => void;
+  preventCloseEnabled?: boolean;
+  onTogglePreventClose?: () => void;
 }
 
 export const SqlEditor: React.FC<SqlEditorProps> = ({
@@ -30,7 +41,13 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   onExecute,
   isExecuting = false,
   activeDatabase,
-  queryHistory
+  queryHistory,
+  onManualSave,
+  saveStatus = 'saved',
+  autoSaveEnabled = true,
+  onToggleAutoSave,
+  preventCloseEnabled = true,
+  onTogglePreventClose
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
@@ -92,10 +109,11 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   }, [value, historyIndex, history]);
 
   // Update cursor position (line and col)
-  const updateCursorPosition = useCallback(() => {
+  const updateCursorPosition = useCallback((overridePos?: number, overrideText?: string) => {
     if (!textareaRef.current) return;
-    const pos = textareaRef.current.selectionStart ?? 0;
-    const linesBefore = value.slice(0, pos).split('\n');
+    const currentText = typeof overrideText === 'string' ? overrideText : (textareaRef.current.value ?? value);
+    const pos = typeof overridePos === 'number' ? overridePos : (textareaRef.current.selectionStart ?? 0);
+    const linesBefore = currentText.slice(0, pos).split('\n');
     setCursorLine(linesBefore.length);
     setCursorCol(linesBefore[linesBefore.length - 1].length + 1);
   }, [value]);
@@ -179,24 +197,30 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   const [wordToReplace, setWordToReplace] = useState('');
   const [menuPosition, setMenuPosition] = useState({ top: 30, left: 50 });
   const hasNavigatedSuggestions = useRef(false);
+  const lastActiveCursorRef = useRef<number>(0);
+  const lastActiveWordRef = useRef<string>('');
 
   // Accurate line count matching actual document lines
   const linesCount = Math.max(value.split('\n').length, 1);
   const lines = Array.from({ length: linesCount }, (_, i) => i + 1);
 
-  const updateSuggestions = useCallback(() => {
+  const updateSuggestions = useCallback((overrideText?: string, overridePos?: number) => {
     if (!textareaRef.current) return;
-    const pos = textareaRef.current.selectionStart;
-    const res = getSuggestions(value, pos, activeDatabase);
+    const currentText = overrideText !== undefined ? overrideText : textareaRef.current.value;
+    const pos = overridePos !== undefined ? overridePos : textareaRef.current.selectionStart;
+    
+    lastActiveCursorRef.current = pos;
+    const res = getSuggestions(currentText, pos, activeDatabase);
     
     if (res.suggestions.length > 0 && res.wordToReplace.length >= 1) {
       setSuggestions(res.suggestions);
       setWordToReplace(res.wordToReplace);
+      lastActiveWordRef.current = res.wordToReplace;
       setSelectedIndex(0);
       hasNavigatedSuggestions.current = false;
       setShowSuggestions(true);
 
-      const linesBeforeCursor = value.slice(0, pos).split('\n');
+      const linesBeforeCursor = currentText.slice(0, pos).split('\n');
       const currentLineIdx = linesBeforeCursor.length - 1;
       const currentCol = linesBeforeCursor[currentLineIdx].length;
 
@@ -209,24 +233,53 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
       setMenuPosition({ top, left });
     } else {
       setShowSuggestions(false);
+      lastActiveWordRef.current = '';
     }
-  }, [value, activeDatabase]);
+  }, [activeDatabase]);
 
   const insertSuggestion = (item: SuggestionItem) => {
     if (!textareaRef.current) return;
-    const pos = textareaRef.current.selectionStart;
-    const start = pos - wordToReplace.length;
-    const end = pos;
+    const currentText = textareaRef.current.value;
+    const rawPos = textareaRef.current.selectionStart;
+    const selStart = (rawPos !== null && rawPos !== undefined && rawPos > 0)
+      ? rawPos
+      : (lastActiveCursorRef.current || currentText.length);
+    const rawEnd = textareaRef.current.selectionEnd;
+    const selEnd = (rawEnd !== null && rawEnd !== undefined && rawEnd >= selStart)
+      ? rawEnd
+      : selStart;
 
-    const newValue = value.slice(0, start) + item.insertText + value.slice(end);
+    // Identify the token / word immediately preceding cursor to be replaced
+    const textBefore = currentText.slice(0, selStart);
+    const match = textBefore.match(/([a-zA-Z0-9_]+)$/);
+    const word = match ? match[1] : (wordToReplace || lastActiveWordRef.current);
+
+    // Check if multi-word suggestion overlaps with preceding words (e.g. "ORDER B" -> "ORDER BY ")
+    let replaceLen = word.length;
+    const itemUpper = (item.label || item.insertText).toUpperCase().trim();
+    const wordsMatch = textBefore.match(/(?:[a-zA-Z0-9_]+\s+){1,2}[a-zA-Z0-9_]*$/);
+    if (wordsMatch) {
+      const candidate = wordsMatch[0];
+      const normalizedCandidate = candidate.replace(/\s+/g, ' ').toUpperCase();
+      if (itemUpper.startsWith(normalizedCandidate)) {
+        replaceLen = candidate.length;
+      }
+    }
+
+    const start = Math.max(0, selStart - replaceLen);
+    const end = selEnd;
+
+    const newValue = currentText.slice(0, start) + item.insertText + currentText.slice(end);
     onChange(newValue);
     setShowSuggestions(false);
+    hasNavigatedSuggestions.current = false;
 
     setTimeout(() => {
       if (textareaRef.current) {
         const newPos = start + item.insertText.length;
         textareaRef.current.focus();
         textareaRef.current.setSelectionRange(newPos, newPos);
+        updateCursorPosition(newPos, newValue);
       }
     }, 10);
   };
@@ -236,6 +289,15 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
     if (((e.ctrlKey || e.metaKey) && e.key === 'Enter') || e.key === 'F5') {
       e.preventDefault();
       onExecute();
+      return;
+    }
+
+    // Save with Ctrl+S or Cmd+S to IndexedDB
+    if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
+      e.preventDefault();
+      if (onManualSave) {
+        onManualSave();
+      }
       return;
     }
 
@@ -496,8 +558,69 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
           </div>
         </div>
 
-        {/* Right side utilities (File I/O, Copy, Clear) */}
+        {/* Right side utilities (Save to IndexedDB, Auto-save, Protection, File I/O, Copy, Clear) */}
         <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
+          {/* Quick Manual Save to IndexedDB (Ctrl + S) */}
+          <button
+            onClick={onManualSave}
+            className={`flex items-center gap-1 px-1.5 py-1 sm:px-2.5 sm:py-1 rounded transition-all cursor-pointer shrink-0 touch-manipulation font-mono text-[11px] ${
+              saveStatus === 'saved'
+                ? 'bg-slate-800/60 text-emerald-400 hover:bg-slate-800 hover:text-emerald-300'
+                : saveStatus === 'saving'
+                ? 'bg-amber-950/60 text-amber-300 animate-pulse border border-amber-700/50'
+                : 'bg-emerald-950/80 text-emerald-300 border border-emerald-600/60 hover:bg-emerald-900 shadow-sm'
+            }`}
+            title="Lưu vĩnh viễn vào bộ nhớ cục bộ IndexedDB (Ctrl + S) - Không lo mất điện hay sập trình duyệt"
+            aria-label="Lưu vào IndexedDB"
+          >
+            <Save className={`w-3.5 h-3.5 ${saveStatus === 'saving' ? 'animate-spin' : ''}`} />
+            <span className="hidden sm:inline">
+              {saveStatus === 'saving' ? 'Đang lưu...' : saveStatus === 'unsaved' ? 'Lưu ngay' : 'Đã lưu'}
+            </span>
+          </button>
+
+          {/* Toggle Auto-Save */}
+          {onToggleAutoSave && (
+            <button
+              onClick={onToggleAutoSave}
+              className={`flex items-center gap-1 px-1.5 py-1 sm:px-2 rounded transition-colors cursor-pointer shrink-0 touch-manipulation text-[11px] ${
+                autoSaveEnabled
+                  ? 'text-sky-300 hover:text-sky-200 bg-sky-950/40 hover:bg-sky-950/70 border border-sky-800/40'
+                  : 'text-slate-500 hover:text-slate-300 bg-slate-900 border border-slate-800'
+              }`}
+              title={autoSaveEnabled ? "Tự động lưu: ĐANG BẬT (Lưu tự động vào IndexedDB khi gõ phím)" : "Tự động lưu: ĐÃ TẮT (Bấm để bật tự động lưu)"}
+            >
+              <HardDrive className="w-3.5 h-3.5" />
+              <span className="hidden xl:inline text-[10px]">
+                AutoSave: {autoSaveEnabled ? 'ON' : 'OFF'}
+              </span>
+            </button>
+          )}
+
+          {/* Toggle Anti-Close Protection (BeforeUnload Pop-up) */}
+          {onTogglePreventClose && (
+            <button
+              onClick={onTogglePreventClose}
+              className={`flex items-center gap-1 px-1.5 py-1 sm:px-2 rounded transition-colors cursor-pointer shrink-0 touch-manipulation text-[11px] ${
+                preventCloseEnabled
+                  ? 'text-emerald-300 hover:text-emerald-200 bg-emerald-950/40 hover:bg-emerald-950/70 border border-emerald-800/40'
+                  : 'text-slate-500 hover:text-slate-300 bg-slate-900 border border-slate-800'
+              }`}
+              title={preventCloseEnabled ? "Chống tắt trang: ĐANG BẬT (Hiện thông báo xác nhận khi tắt tab hoặc reload) - Bấm để Tắt" : "Chống tắt trang: ĐÃ TẮT (Không làm phiền khi đóng tab) - Bấm để Bật"}
+            >
+              {preventCloseEnabled ? (
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+              ) : (
+                <ShieldAlert className="w-3.5 h-3.5 text-slate-500" />
+              )}
+              <span className="hidden xl:inline text-[10px]">
+                Chống tắt: {preventCloseEnabled ? 'BẬT' : 'TẮT'}
+              </span>
+            </button>
+          )}
+
+          <div className="h-4 w-px bg-slate-800 mx-0.5 shrink-0" />
+
           {/* Open local .sql file */}
           <button
             onClick={() => fileInputRef.current?.click()}
@@ -512,7 +635,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
           <button
             onClick={handleSaveFile}
             className="flex items-center gap-1 px-1.5 py-1 sm:px-2 text-slate-400 hover:text-slate-200 transition-colors cursor-pointer shrink-0 touch-manipulation"
-            title="Lưu câu lệnh thành file .sql"
+            title="Lưu câu lệnh thành file .sql về máy"
           >
             <Download className="w-3.5 h-3.5 text-emerald-400" />
             <span className="hidden lg:inline text-[11px]">Lưu file</span>
@@ -581,9 +704,11 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
             value={value}
             wrap="off"
             onChange={(e) => {
-              onChange(e.target.value);
-              updateCursorPosition();
-              updateSuggestions();
+              const newVal = e.target.value;
+              const newPos = e.target.selectionStart;
+              onChange(newVal);
+              updateCursorPosition(newPos, newVal);
+              updateSuggestions(newVal, newPos);
             }}
             onScroll={handleScroll}
             onKeyUp={(e) => {
@@ -612,7 +737,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
               // Clicking elsewhere in editor dismisses suggestions so it doesn't obstruct code
               setShowSuggestions(false);
             }}
-            onSelect={updateCursorPosition}
+            onSelect={() => updateCursorPosition()}
             onKeyDown={handleKeyDown}
             placeholder="-- Nhập câu lệnh T-SQL tại đây (Ví dụ: SELECT * FROM SinhVien;)&#10;-- Bấm nút tam giác xanh hoặc F5 để thực thi."
             spellCheck={false}
@@ -689,9 +814,13 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
           {activeDatabase && (
             <span className="hidden sm:inline">CSDL: <strong className="text-sky-400 font-bold">{activeDatabase}</strong></span>
           )}
+          <span className="hidden md:inline-flex items-center gap-1 text-[10px] text-emerald-400/90">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            IndexedDB
+          </span>
         </div>
         <div className="text-[10px] text-slate-500 hidden sm:block">
-          F5 / Ctrl+Enter: Chạy | Ctrl+Z: Undo | Ctrl+Y: Redo
+          Ctrl+S: Lưu | F5 / Ctrl+Enter: Chạy | Ctrl+Z: Undo | Ctrl+Y: Redo
         </div>
       </div>
     </div>

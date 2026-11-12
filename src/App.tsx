@@ -6,9 +6,15 @@ import {
   GripHorizontal,
   Code2,
   BookOpen,
-  Network
+  Network,
+  ShieldCheck,
+  ShieldAlert,
+  HardDrive,
+  Save,
+  Check
 } from 'lucide-react';
 import { sqlEngine, QueryExecutionResult, TableSchemaInfo, DatabaseInfo } from './services/sqlEngine';
+import { indexedDbService } from './services/indexedDbService';
 import { SqlEditor } from './components/Editor/SqlEditor';
 import { ResultsPanel } from './components/Results/ResultsPanel';
 import { DatabaseExplorer } from './components/DatabaseExplorer/DatabaseExplorer';
@@ -152,31 +158,185 @@ export default function App() {
   const [isSyntaxGuideOpen, setIsSyntaxGuideOpen] = useState<boolean>(false);
   const [isAssistantModalOpen, setIsAssistantModalOpen] = useState<boolean>(false);
 
-  // Auto-save script and history to localStorage
-  useEffect(() => {
+  // IndexedDB Persistence and Protection States
+  const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'unsaved'>('saved');
+  const [lastSavedTimestamp, setLastSavedTimestamp] = useState<number | null>(null);
+  
+  // Auto-save toggle (persisted)
+  const [autoSaveEnabled, setAutoSaveEnabled] = useState<boolean>(() => {
     try {
-      localStorage.setItem('sqlstudio_saved_script', sqlCode);
+      const saved = localStorage.getItem('sqlstudio_autosave_enabled');
+      return saved !== null ? saved === 'true' : true;
     } catch {
-      // ignore
+      return true;
     }
-  }, [sqlCode]);
+  });
 
-  useEffect(() => {
+  // Anti-close / Beforeunload warning toggle (persisted)
+  const [preventCloseEnabled, setPreventCloseEnabled] = useState<boolean>(() => {
     try {
-      localStorage.setItem('sqlstudio_query_history', JSON.stringify(queryHistory));
+      const saved = localStorage.getItem('sqlstudio_prevent_close_enabled');
+      return saved !== null ? saved === 'true' : true;
     } catch {
-      // ignore
+      return true;
     }
-  }, [queryHistory]);
+  });
 
-  // Auto-save splitter height
+  // Track if there are unsaved modifications
+  const hasUnsavedChanges = useRef<boolean>(false);
+  const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const isInitialRestoreDone = useRef<boolean>(false);
+
+  // Restore initial snapshot from IndexedDB on startup
   useEffect(() => {
+    let isMounted = true;
+    const restoreFromIndexedDb = async () => {
+      try {
+        const snapshot = await indexedDbService.loadWorkspace();
+        if (snapshot && isMounted) {
+          if (snapshot.sqlCode) {
+            setSqlCode(snapshot.sqlCode);
+          }
+          if (Array.isArray(snapshot.queryHistory) && snapshot.queryHistory.length > 0) {
+            setQueryHistory(snapshot.queryHistory);
+          }
+          if (typeof snapshot.preventCloseEnabled === 'boolean') {
+            setPreventCloseEnabled(snapshot.preventCloseEnabled);
+          }
+          if (typeof snapshot.autoSaveEnabled === 'boolean') {
+            setAutoSaveEnabled(snapshot.autoSaveEnabled);
+          }
+          if (typeof snapshot.editorHeightPercent === 'number') {
+            setEditorHeightPercent(snapshot.editorHeightPercent);
+          }
+
+          // Restore AlaSQL database instances and rows
+          if (snapshot.databasesDump && snapshot.databasesDump.length > 0) {
+            indexedDbService.restoreDatabasesFromSnapshot(snapshot);
+            refreshDatabaseState();
+          }
+
+          if (snapshot.lastSavedAt) {
+            setLastSavedTimestamp(snapshot.lastSavedAt);
+          }
+        }
+      } catch (err) {
+        console.warn('Error reading from IndexedDB on startup:', err);
+      } finally {
+        isInitialRestoreDone.current = true;
+      }
+    };
+
+    restoreFromIndexedDb();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // Save full workspace to IndexedDB
+  const performSaveToIndexedDb = useCallback(async () => {
+    setSaveStatus('saving');
     try {
-      localStorage.setItem('sqlstudio_editor_height_percent', String(editorHeightPercent));
-    } catch {
-      // ignore
+      const snapshot = indexedDbService.captureFullSnapshot(
+        sqlCode,
+        queryHistory,
+        preventCloseEnabled,
+        autoSaveEnabled,
+        editorHeightPercent
+      );
+      await indexedDbService.saveWorkspace(snapshot);
+
+      // Also mirror to localStorage for redundancy
+      try {
+        localStorage.setItem('sqlstudio_saved_script', sqlCode);
+        localStorage.setItem('sqlstudio_query_history', JSON.stringify(queryHistory));
+        localStorage.setItem('sqlstudio_autosave_enabled', String(autoSaveEnabled));
+        localStorage.setItem('sqlstudio_prevent_close_enabled', String(preventCloseEnabled));
+        localStorage.setItem('sqlstudio_editor_height_percent', String(editorHeightPercent));
+      } catch {
+        // ignore
+      }
+
+      hasUnsavedChanges.current = false;
+      setSaveStatus('saved');
+      setLastSavedTimestamp(Date.now());
+    } catch (err) {
+      console.error('Failed to save to IndexedDB:', err);
+      setSaveStatus('unsaved');
     }
-  }, [editorHeightPercent]);
+  }, [sqlCode, queryHistory, preventCloseEnabled, autoSaveEnabled, editorHeightPercent]);
+
+  // Handle changes to sqlCode: mark unsaved and schedule auto-save if enabled
+  useEffect(() => {
+    if (!isInitialRestoreDone.current) return;
+
+    hasUnsavedChanges.current = true;
+    setSaveStatus('unsaved');
+
+    if (autoSaveEnabled) {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+      }
+      autoSaveTimerRef.current = setTimeout(() => {
+        performSaveToIndexedDb();
+      }, 800); // 800ms debounce
+    }
+
+    return () => {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+      }
+    };
+  }, [sqlCode, autoSaveEnabled, performSaveToIndexedDb]);
+
+  // Prevent closing / reloading page if preventCloseEnabled is true
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (!preventCloseEnabled) return;
+
+      // If user enabled protection, warn them before closing
+      // Modern browsers display their standard confirmation modal
+      const confirmationMessage = 'Bạn có chắc chắn muốn rời khỏi SQLStudio? Hãy chắc chắn rằng bạn đã lưu các câu lệnh SQL đang làm.';
+      e.preventDefault();
+      e.returnValue = confirmationMessage;
+      return confirmationMessage;
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [preventCloseEnabled]);
+
+  // Toggle handlers with persistence
+  const handleToggleAutoSave = useCallback(() => {
+    setAutoSaveEnabled(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem('sqlstudio_autosave_enabled', String(next));
+      } catch {
+        // ignore
+      }
+      if (next) {
+        // Immediately save current state when turned on
+        setTimeout(() => performSaveToIndexedDb(), 50);
+      }
+      return next;
+    });
+  }, [performSaveToIndexedDb]);
+
+  const handleTogglePreventClose = useCallback(() => {
+    setPreventCloseEnabled(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem('sqlstudio_prevent_close_enabled', String(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  }, []);
 
   // Pointer event handlers for draggable splitter (Touch + Mouse)
   const handleSplitterPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -239,12 +399,20 @@ export default function App() {
       }
 
       refreshDatabaseState();
+
+      // Trigger auto-save of database state into IndexedDB after execution
+      if (autoSaveEnabled) {
+        performSaveToIndexedDb();
+      }
     }, 40);
-  }, [sqlCode, queryHistory, refreshDatabaseState]);
+  }, [sqlCode, queryHistory, refreshDatabaseState, autoSaveEnabled, performSaveToIndexedDb]);
 
   const handleSelectDatabase = (dbName: string) => {
     sqlEngine.setActiveDatabase(dbName);
     refreshDatabaseState();
+    if (autoSaveEnabled) {
+      performSaveToIndexedDb();
+    }
   };
 
   const handleResetAll = () => {
@@ -263,6 +431,10 @@ export default function App() {
       resultSets: [],
       messages: ['Đã làm sạch toàn bộ môi trường.']
     });
+    // Clear and re-save fresh empty snapshot in IndexedDB
+    setTimeout(() => {
+      performSaveToIndexedDb();
+    }, 50);
   };
 
   // Export full database to .sql file
@@ -353,8 +525,40 @@ export default function App() {
           </button>
         </nav>
 
-        {/* Zone 3: Assistant trigger */}
-        <div className="flex items-center gap-2 shrink-0">
+        {/* Zone 3: Storage state & Assistant trigger */}
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          {/* Quick Storage Indicator Badge */}
+          <button
+            onClick={performSaveToIndexedDb}
+            className={`hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-mono border transition-all cursor-pointer ${
+              saveStatus === 'saved'
+                ? 'bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-700'
+                : saveStatus === 'saving'
+                ? 'bg-amber-950/40 border-amber-800/60 text-amber-300 animate-pulse'
+                : 'bg-emerald-950/40 border-emerald-800/60 text-emerald-300 hover:bg-emerald-900/40'
+            }`}
+            title="Lưu trữ vĩnh viễn trong IndexedDB: Tự động lưu mọi thay đổi đề phòng mất điện hoặc sập máy (Bấm để lưu thủ công ngay)"
+          >
+            <span className={`w-2 h-2 rounded-full ${saveStatus === 'saving' ? 'bg-amber-400 animate-ping' : saveStatus === 'unsaved' ? 'bg-amber-400' : 'bg-emerald-400'}`} />
+            <span className="text-[10px]">
+              {saveStatus === 'saving' ? 'Đang lưu...' : saveStatus === 'unsaved' ? 'Chưa lưu (Auto)' : 'IndexedDB: Đã lưu'}
+            </span>
+          </button>
+
+          {/* Quick Anti-close Protection toggle */}
+          <button
+            onClick={handleTogglePreventClose}
+            className={`flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors cursor-pointer touch-manipulation ${
+              preventCloseEnabled 
+                ? 'bg-emerald-950/50 text-emerald-300 border-emerald-800/60 hover:bg-emerald-900/50' 
+                : 'bg-slate-950 text-slate-500 border-slate-800 hover:text-slate-300'
+            }`}
+            title={preventCloseEnabled ? "Chế độ chống tắt trang: ĐANG BẬT (Hiện xác nhận trước khi đóng tab/reload) - Bấm để Tắt" : "Chế độ chống tắt trang: ĐÃ TẮT - Bấm để Bật"}
+          >
+            {preventCloseEnabled ? <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" /> : <ShieldAlert className="w-3.5 h-3.5 text-slate-500" />}
+            <span className="hidden lg:inline text-[11px]">Chống tắt trang</span>
+          </button>
+
           <button
             onClick={() => setIsAssistantModalOpen(true)}
             className="flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-1.5 text-xs font-medium text-amber-300 bg-amber-950/60 hover:bg-amber-900/60 border border-amber-800/80 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer touch-manipulation active:scale-95"
@@ -430,6 +634,12 @@ export default function App() {
                   isExecuting={isExecuting}
                   activeDatabase={activeDatabase}
                   queryHistory={queryHistory}
+                  onManualSave={performSaveToIndexedDb}
+                  saveStatus={saveStatus}
+                  autoSaveEnabled={autoSaveEnabled}
+                  onToggleAutoSave={handleToggleAutoSave}
+                  preventCloseEnabled={preventCloseEnabled}
+                  onTogglePreventClose={handleTogglePreventClose}
                 />
               </div>
 
