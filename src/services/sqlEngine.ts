@@ -30,6 +30,20 @@ export interface SingleResultSet {
   executionPlan?: ExecutionPlanNode;
 }
 
+export interface StoredProcedureParam {
+  name: string;
+  type?: string;
+  defaultValue?: string;
+}
+
+export interface StoredProcedureInfo {
+  name: string;
+  database: string;
+  parameters: StoredProcedureParam[];
+  body: string;
+  createdAt: string;
+}
+
 export interface QueryExecutionResult {
   success: boolean;
   data: Record<string, any>[] | null;
@@ -37,7 +51,7 @@ export interface QueryExecutionResult {
   rowCount: number;
   executionTimeMs: number;
   message: string;
-  queryType: 'SELECT' | 'INSERT' | 'UPDATE' | 'DELETE' | 'CREATE' | 'ALTER' | 'DROP' | 'USE' | 'OTHER';
+  queryType: 'SELECT' | 'INSERT' | 'UPDATE' | 'DELETE' | 'CREATE' | 'ALTER' | 'DROP' | 'USE' | 'EXEC' | 'OTHER';
   activeDatabase: string;
   executionPlan?: ExecutionPlanNode;
   resultSets: SingleResultSet[];
@@ -59,6 +73,8 @@ export class SqlEngineService {
   private userDatabases: Set<string> = new Set(['master']);
   // Store table column metadata inferred from CREATE TABLE statements
   private tableMetadata: Record<string, Record<string, ColumnDefinition[]>> = {};
+  // Store procedure definitions: dbName -> procName -> StoredProcedureInfo
+  private storedProcedures: Record<string, Record<string, StoredProcedureInfo>> = {};
 
   constructor() {
     this.registerTsqlFunctions();
@@ -147,7 +163,9 @@ export class SqlEngineService {
       if (!name) return null;
       const clean = String(name).replace(/^(?:dbo\.|\[dbo\]\.)?\[?([a-zA-Z0-9_]+)\]?$/i, '$1');
       const db = this.activeDatabase || '_scratchpad_';
-      return alasql.databases[db]?.tables?.[clean] ? 1 : null;
+      if (alasql.databases[db]?.tables?.[clean]) return 1;
+      if (this.storedProcedures[db]?.[clean]) return 2;
+      return null;
     };
   }
 
@@ -160,6 +178,7 @@ export class SqlEngineService {
       this.activeDatabase = '';
       this.userDatabases = new Set();
       this.tableMetadata = {};
+      this.storedProcedures = {};
     } catch (err) {
       console.error('Error initializing scratchpad DB:', err);
     }
@@ -178,11 +197,26 @@ export class SqlEngineService {
       this.activeDatabase = '';
       this.userDatabases = new Set();
       this.tableMetadata = {};
+      this.storedProcedures = {};
       return true;
     } catch (err) {
       console.error('Failed to reset databases:', err);
       return false;
     }
+  }
+
+  public getStoredProcedures(dbName: string = this.activeDatabase): StoredProcedureInfo[] {
+    const db = dbName || this.activeDatabase || '_scratchpad_';
+    const procs = this.storedProcedures[db];
+    if (!procs) return [];
+    return Object.values(procs);
+  }
+
+  public setStoredProcedures(dbName: string, procs: Record<string, StoredProcedureInfo>) {
+    if (!this.storedProcedures[dbName]) {
+      this.storedProcedures[dbName] = {};
+    }
+    this.storedProcedures[dbName] = { ...this.storedProcedures[dbName], ...procs };
   }
 
   public setActiveDatabase(dbName: string) {
@@ -282,7 +316,33 @@ export class SqlEngineService {
         const waitingForViewBody = /^(?:CREATE\s+(?:OR\s+ALTER\s+)?VIEW|ALTER\s+VIEW)\b/i.test(trimmedCurrent) &&
           !/\bAS\s+[\s\S]*?\bSELECT\b/i.test(trimmedCurrent);
 
-        const startsNewStmt = parenDepth === 0 && trimmedCurrent.length > 0 && !waitingForIfBody && !waitingForViewBody &&
+        // Check if currently accumulating a CREATE/ALTER PROC/PROCEDURE statement
+        const isProcDef = /^(?:CREATE\s+(?:OR\s+ALTER\s+)?|ALTER\s+)(?:PROC|PROCEDURE)\b/i.test(trimmedCurrent);
+        let waitingForProcBody = false;
+        if (isProcDef) {
+          if (!/\bAS\b/i.test(trimmedCurrent)) {
+            waitingForProcBody = true;
+          } else {
+            const beginMatches = (trimmedCurrent.match(/\bBEGIN\b/gi) || []).length;
+            const endMatches = (trimmedCurrent.match(/\bEND\b/gi) || []).length;
+            if (beginMatches > endMatches) {
+              waitingForProcBody = true;
+            } else {
+              // Lines like UPDATE, SET, SELECT, INSERT, DELETE, PRINT inside a proc belong to the proc
+              const isTopLevelCommand = /^(?:CREATE\s+(?:DATABASE|TABLE|VIEW|PROC|PROCEDURE)|DROP|USE)\b/i.test(trimmedLine);
+              waitingForProcBody = !isTopLevelCommand;
+            }
+          }
+        }
+
+        // Prevent splitting UPDATE statements before SET clause
+        const waitingForUpdateSet = /^\s*UPDATE\b/i.test(trimmedCurrent) && !/\bSET\b/i.test(trimmedCurrent);
+        // Prevent splitting INSERT statements before VALUES / SELECT clause
+        const waitingForInsertValues = /^\s*INSERT\b/i.test(trimmedCurrent) && !/\b(?:VALUES|SELECT|EXEC)\b/i.test(trimmedCurrent);
+
+        const startsNewStmt = parenDepth === 0 && trimmedCurrent.length > 0 &&
+          !waitingForIfBody && !waitingForViewBody && !waitingForProcBody &&
+          !waitingForUpdateSet && !waitingForInsertValues &&
           /^(CREATE|ALTER|DROP|USE|SELECT|INSERT|UPDATE|DELETE|IF|TRUNCATE|PRINT|SET|EXEC)\b/i.test(trimmedLine);
 
         if (startsNewStmt) {
@@ -307,6 +367,11 @@ export class SqlEngineService {
 
     const finalStmts: string[] = [];
     for (const s of statements) {
+      // Procedures must NOT have their internal semicolons split into separate statements
+      if (/^\s*(?:CREATE\s+(?:OR\s+ALTER\s+)?|ALTER\s+)(?:PROC|PROCEDURE)\b/i.test(s)) {
+        finalStmts.push(s.trim());
+        continue;
+      }
       // Split by semicolon outside string literals
       let cur = '';
       let inStr = false;
@@ -495,6 +560,161 @@ export class SqlEngineService {
     return s;
   }
 
+  private parseProcedureParameters(rawParams: string): StoredProcedureParam[] {
+    const params: StoredProcedureParam[] = [];
+    if (!rawParams || !rawParams.trim()) return params;
+
+    const tokens = rawParams.split(',');
+    for (const token of tokens) {
+      const trimmed = token.trim();
+      if (!trimmed) continue;
+      const m = trimmed.match(/^@([a-zA-Z0-9_]+)(?:\s+([a-zA-Z0-9_()]+))?(?:\s*=\s*(.+?))?(?:\s+OUTPUT)?$/i);
+      if (m) {
+        params.push({
+          name: '@' + m[1],
+          type: m[2]?.toUpperCase() || 'VARCHAR(50)',
+          defaultValue: m[3]?.trim()
+        });
+      }
+    }
+    return params;
+  }
+
+  private executeProcedureBody(
+    procName: string,
+    body: string,
+    rawArgsStr: string,
+    params: StoredProcedureParam[]
+  ): { resultSets: SingleResultSet[]; totalAffected: number; messages: string[] } {
+    let replacedBody = body;
+
+    // Parameter substitution
+    const cleanArgs = rawArgsStr.replace(/;+$/, '').trim();
+    if (params.length > 0) {
+      const argMap: Record<string, string> = {};
+
+      if (cleanArgs.includes('=')) {
+        // Named arguments e.g. @name = 'val', @price = 100
+        const parts = cleanArgs.split(',');
+        for (const p of parts) {
+          const eqIdx = p.indexOf('=');
+          if (eqIdx > -1) {
+            const k = p.substring(0, eqIdx).trim().replace(/^@/, '');
+            const v = p.substring(eqIdx + 1).trim();
+            argMap['@' + k] = v;
+          }
+        }
+      } else if (cleanArgs) {
+        // Positional arguments e.g. 'Laptop', 100000
+        const positionalVals: string[] = [];
+        let cur = '';
+        let inStr = false;
+        for (let i = 0; i < cleanArgs.length; i++) {
+          const c = cleanArgs[i];
+          if (c === "'" && (i === 0 || cleanArgs[i - 1] !== '\\')) inStr = !inStr;
+          if (c === ',' && !inStr) {
+            positionalVals.push(cur.trim());
+            cur = '';
+          } else {
+            cur += c;
+          }
+        }
+        if (cur.trim()) positionalVals.push(cur.trim());
+
+        positionalVals.forEach((val, idx) => {
+          if (params[idx]) {
+            argMap[params[idx].name] = val;
+          }
+        });
+      }
+
+      // Substitute parameters in body
+      for (const param of params) {
+        const val = argMap[param.name] ?? param.defaultValue;
+        if (val !== undefined) {
+          const escapedName = param.name.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+          replacedBody = replacedBody.replace(new RegExp(`${escapedName}\\b`, 'gi'), val);
+        }
+      }
+    }
+
+    // Strip enclosing BEGIN ... END if present
+    let cleanedBody = replacedBody.trim();
+    if (/^BEGIN\b/i.test(cleanedBody)) {
+      cleanedBody = cleanedBody.replace(/^BEGIN\b/i, '').replace(/\bEND\s*;?\s*$/i, '').trim();
+    }
+
+    const subStmts = this.cleanAndSplitStatements(cleanedBody);
+    const resultSets: SingleResultSet[] = [];
+    const messages: string[] = [];
+    let totalAffected = 0;
+
+    const execDb = this.activeDatabase || '_scratchpad_';
+    alasql(`USE ${execDb};`);
+
+    for (const rawSubStmt of subStmts) {
+      const subStmt = this.preprocessStatement(rawSubStmt);
+      if (!subStmt) continue;
+
+      const firstWord = subStmt.split(/\s+/)[0]?.toUpperCase() || 'SELECT';
+
+      // PRINT statement inside proc
+      const printMatch = subStmt.match(/^PRINT\s+(?:N?'((?:''|[^'])*)'|([a-zA-Z0-9_]+))/i);
+      if (printMatch) {
+        const printMsg = printMatch[1] ?? printMatch[2] ?? '';
+        messages.push(printMsg);
+        continue;
+      }
+
+      // Skip inner transaction commands
+      if (/^\s*(?:BEGIN\s+TRAN(?:SACTION)?|COMMIT(?:\s+TRAN(?:SACTION)?)?|ROLLBACK(?:\s+TRAN(?:SACTION)?)?);?\s*$/i.test(subStmt)) {
+        continue;
+      }
+
+      // Sub-procedure call
+      const subExecMatch = subStmt.match(/^(?:EXEC|EXECUTE)\s+(?:\[?dbo\]?\.)?\[?([a-zA-Z0-9_]+)\]?(.*)$/i);
+      if (subExecMatch) {
+        const subProcName = subExecMatch[1];
+        const subRawArgs = subExecMatch[2] || '';
+        const procs = this.storedProcedures[execDb] || {};
+        const matchedSubKey = Object.keys(procs).find(k => k.toLowerCase() === subProcName.toLowerCase());
+        if (matchedSubKey) {
+          const subProc = procs[matchedSubKey];
+          const subRes = this.executeProcedureBody(subProc.name, subProc.body, subRawArgs, subProc.parameters);
+          resultSets.push(...subRes.resultSets);
+          totalAffected += subRes.totalAffected;
+          messages.push(...subRes.messages);
+        }
+        continue;
+      }
+
+      // Execute statement in AlaSQL
+      const res: any = alasql(subStmt);
+      if (Array.isArray(res)) {
+        let columns = res.length > 0 ? Object.keys(res[0]) : [];
+        if (columns.length === 0) {
+          columns = this.extractColumnsFromSelectQuery(subStmt);
+        }
+        const plan = this.generateSimulatedPlan(subStmt, res.length);
+        resultSets.push({
+          id: `proc-result-${resultSets.length + 1}`,
+          statement: rawSubStmt.trim(),
+          data: res,
+          columns,
+          rowCount: res.length,
+          executionPlan: plan
+        });
+        messages.push(`SELECT: ${res.length} hàng từ thủ tục [${procName}].`);
+      } else if (typeof res === 'number') {
+        totalAffected += res;
+        const act = /^INSERT/i.test(firstWord) ? 'chèn' : /^UPDATE/i.test(firstWord) ? 'cập nhật' : /^DELETE/i.test(firstWord) ? 'xóa' : 'thực thi';
+        messages.push(`(${res} hàng được ${act} thành công từ thủ tục [${procName}]).`);
+      }
+    }
+
+    return { resultSets, totalAffected, messages };
+  }
+
   public execute(sql: string): QueryExecutionResult {
     const startTime = performance.now();
     const statements = this.cleanAndSplitStatements(sql);
@@ -649,6 +869,115 @@ export class SqlEngineService {
           }
         }
 
+        // 7b. Handle IF EXISTS ... DROP PROC / IF OBJECT_ID(...) IS NOT NULL DROP PROC
+        const ifDropProc = stmt.match(/^IF\s+(?:EXISTS\s*\([\s\S]*?\)|OBJECT_ID\([^)]+\)\s+IS\s+NOT\s+NULL)\s+DROP\s+PROC(?:EDURE)?\s+(?:IF\s+EXISTS\s+)?(?:\[?dbo\]?\.)?\[?([a-zA-Z0-9_]+)\]?/i);
+        if (ifDropProc) {
+          const delProc = ifDropProc[1];
+          const dbKey = this.activeDatabase || '_scratchpad_';
+          if (this.storedProcedures[dbKey]) {
+            delete this.storedProcedures[dbKey][delProc];
+          }
+          lastQueryType = 'DROP';
+          messages.push(`Thủ tục lưu trữ (Stored Procedure) '${delProc}' đã được xóa (nếu tồn tại).`);
+          continue;
+        }
+
+        // 7c. Handle DROP PROC [IF EXISTS] [name]
+        const dropProcMatch = stmt.match(/^DROP\s+PROC(?:EDURE)?\s+(?:IF\s+EXISTS\s+)?(?:\[?dbo\]?\.)?\[?([a-zA-Z0-9_]+)\]?/i);
+        if (dropProcMatch) {
+          const delProc = dropProcMatch[1];
+          const dbKey = this.activeDatabase || '_scratchpad_';
+          if (this.storedProcedures[dbKey]) {
+            delete this.storedProcedures[dbKey][delProc];
+          }
+          lastQueryType = 'DROP';
+          messages.push(`Thủ tục lưu trữ (Stored Procedure) '${delProc}' đã được xóa thành công.`);
+          continue;
+        }
+
+        // 7d. Handle CREATE [OR ALTER] PROC/PROCEDURE / ALTER PROC/PROCEDURE
+        const procMatch = stmt.match(/^(?:CREATE\s+(?:OR\s+ALTER\s+)?PROC(?:EDURE)?|ALTER\s+PROC(?:EDURE)?)\s+(?:\[?dbo\]?\.)?\[?([a-zA-Z0-9_]+)\]?(?:\s*\(([\s\S]*?)\)|\s+(@[\s\S]*?))?\s*\bAS\b([\s\S]+)$/i);
+        if (procMatch) {
+          const procName = procMatch[1];
+          const rawParams = procMatch[2] || procMatch[3] || '';
+          const procBody = procMatch[4].trim();
+          const dbKey = this.activeDatabase || '_scratchpad_';
+
+          if (!this.storedProcedures[dbKey]) {
+            this.storedProcedures[dbKey] = {};
+          }
+
+          const parsedParams = this.parseProcedureParameters(rawParams);
+
+          this.storedProcedures[dbKey][procName] = {
+            name: procName,
+            database: dbKey,
+            parameters: parsedParams,
+            body: procBody,
+            createdAt: new Date().toISOString()
+          };
+
+          lastQueryType = 'CREATE';
+          messages.push(`Thủ tục lưu trữ (Stored Procedure) '${procName}' đã được khởi tạo/cập nhật thành công.`);
+          continue;
+        }
+
+        // 7e. Handle EXEC / EXECUTE procedure
+        const execMatch = stmt.match(/^(?:EXEC|EXECUTE)\s+(?:\[?dbo\]?\.)?\[?([a-zA-Z0-9_]+)\]?(.*)$/i);
+        if (execMatch) {
+          const procName = execMatch[1];
+          const rawArgs = execMatch[2]?.trim() || '';
+          const dbKey = this.activeDatabase || '_scratchpad_';
+          const procs = this.storedProcedures[dbKey] || {};
+          const matchedProcKey = Object.keys(procs).find(k => k.toLowerCase() === procName.toLowerCase());
+
+          if (matchedProcKey) {
+            const proc = procs[matchedProcKey];
+            const procRes = this.executeProcedureBody(proc.name, proc.body, rawArgs, proc.parameters);
+            resultSets.push(...procRes.resultSets);
+            totalAffected += procRes.totalAffected;
+            messages.push(...procRes.messages);
+            messages.push(`Thực thi thủ tục '${proc.name}' hoàn tất.`);
+            lastQueryType = 'EXEC';
+            continue;
+          } else {
+            // Check for system procedure sp_help
+            if (/^sp_help$/i.test(procName)) {
+              const targetTable = rawArgs.replace(/['";\[\]]/g, '').trim();
+              const schemas = this.getDatabaseSchema(dbKey);
+              const targetSchema = schemas.find(s => s.name.toLowerCase() === targetTable.toLowerCase());
+              if (targetSchema) {
+                const rows = targetSchema.columns.map((c) => ({
+                  Column_name: c.name,
+                  Type: c.type,
+                  Is_Nullable: 'YES',
+                  Primary_Key: c.isPk ? 'YES' : 'NO'
+                }));
+                resultSets.push({
+                  id: `result-${resultSets.length + 1}`,
+                  statement: rawStmt.trim(),
+                  data: rows,
+                  columns: ['Column_name', 'Type', 'Is_Nullable', 'Primary_Key'],
+                  rowCount: rows.length
+                });
+                messages.push(`sp_help: Thông tin chi tiết bảng '${targetSchema.name}'.`);
+                lastQueryType = 'SELECT';
+                continue;
+              }
+            }
+            throw new Error(`Lỗi T-SQL [Msg 2812]: Không thể tìm thấy thủ tục lưu trữ '${procName}'. Hãy kiểm tra lại tên hoặc tạo thủ tục bằng lệnh CREATE PROC.`);
+          }
+        }
+
+        // 7f. Handle standalone BEGIN/END or transaction blocks
+        if (/^\s*BEGIN\s*$/i.test(stmt) || /^\s*END;?\s*$/i.test(stmt)) {
+          continue;
+        }
+        if (/^\s*(?:BEGIN\s+TRAN(?:SACTION)?|COMMIT(?:\s+TRAN(?:SACTION)?)?|ROLLBACK(?:\s+TRAN(?:SACTION)?)?);?\s*$/i.test(stmt)) {
+          messages.push(`Lệnh điều khiển giao dịch (${stmt.replace(/;$/, '')}) hoàn tất.`);
+          continue;
+        }
+
         // 8. Handle IF EXISTS ... DROP TABLE [name] / IF OBJECT_ID(...) IS NOT NULL DROP TABLE
         const ifDropTbl = stmt.match(/^IF\s+(?:EXISTS\s*\([\s\S]*?\)|OBJECT_ID\([^)]+\)\s+IS\s+NOT\s+NULL)\s+DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:\[?dbo\]?\.)?\[?([a-zA-Z0-9_]+)\]?/i);
         if (ifDropTbl) {
@@ -747,6 +1076,32 @@ export class SqlEngineService {
             executionPlan: plan
           });
           messages.push(`SELECT: Trả về ${rows.length} hàng (sys.tables).`);
+          lastQueryType = 'SELECT';
+          continue;
+        }
+
+        // 13b. Handle SELECT queries from sys.procedures
+        if (/^SELECT\b/i.test(stmt) && /FROM\s+(?:sys\.procedures|sys\.objects\s+WHERE\s+type\s*=\s*'P')\b/i.test(stmt)) {
+          const dbKey = this.activeDatabase || '_scratchpad_';
+          const procs = this.getStoredProcedures(dbKey);
+          const rows = procs.map((p, i) => ({
+            object_id: i + 1,
+            name: p.name,
+            type: 'P',
+            type_desc: 'SQL_STORED_PROCEDURE',
+            create_date: p.createdAt
+          }));
+          const cols = rows.length > 0 ? Object.keys(rows[0]) : ['object_id', 'name', 'type', 'type_desc', 'create_date'];
+          const plan = this.generateSimulatedPlan(stmt, rows.length);
+          resultSets.push({
+            id: `result-${resultSets.length + 1}`,
+            statement: rawStmt.trim(),
+            data: rows,
+            columns: cols,
+            rowCount: rows.length,
+            executionPlan: plan
+          });
+          messages.push(`SELECT: Trả về ${rows.length} hàng (sys.procedures).`);
           lastQueryType = 'SELECT';
           continue;
         }
@@ -1115,6 +1470,27 @@ export class SqlEngineService {
         }
       } catch {
         // ignore
+      }
+    }
+
+    // Export Stored Procedures
+    const procs = this.getStoredProcedures(dbName);
+    if (procs.length > 0) {
+      lines.push(`-- ========================================================`);
+      lines.push(`-- THỦ TỤC LƯU TRỮ (STORED PROCEDURES)`);
+      lines.push(`-- ========================================================`);
+      lines.push(``);
+      for (const p of procs) {
+        lines.push(`-- Thủ tục: ${p.name}`);
+        lines.push(`CREATE PROC ${p.name}`);
+        if (p.parameters.length > 0) {
+          const paramStr = p.parameters.map(pr => `${pr.name} ${pr.type || 'VARCHAR(50)'}${pr.defaultValue ? ' = ' + pr.defaultValue : ''}`).join(', ');
+          lines.push(`  ${paramStr}`);
+        }
+        lines.push(`AS`);
+        lines.push(p.body);
+        lines.push(`GO`);
+        lines.push(``);
       }
     }
 

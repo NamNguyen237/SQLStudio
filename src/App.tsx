@@ -13,7 +13,7 @@ import {
   Save,
   Check
 } from 'lucide-react';
-import { sqlEngine, QueryExecutionResult, TableSchemaInfo, DatabaseInfo } from './services/sqlEngine';
+import { sqlEngine, QueryExecutionResult, TableSchemaInfo, DatabaseInfo, StoredProcedureInfo } from './services/sqlEngine';
 import { indexedDbService } from './services/indexedDbService';
 import { SqlEditor } from './components/Editor/SqlEditor';
 import { ResultsPanel } from './components/Results/ResultsPanel';
@@ -108,6 +108,7 @@ export default function App() {
   const [activeDatabase, setActiveDatabase] = useState<string>('');
   const [databaseList, setDatabaseList] = useState<DatabaseInfo[]>([]);
   const [schemas, setSchemas] = useState<TableSchemaInfo[]>([]);
+  const [storedProcedures, setStoredProcedures] = useState<StoredProcedureInfo[]>([]);
   
   // Local persistence: load saved script from localStorage if exists
   const [sqlCode, setSqlCode] = useState<string>(() => {
@@ -375,8 +376,11 @@ export default function App() {
     if (currentDb) {
       const currentSchemas = sqlEngine.getDatabaseSchema(currentDb);
       setSchemas(currentSchemas);
+      const currentProcs = sqlEngine.getStoredProcedures(currentDb);
+      setStoredProcedures(currentProcs);
     } else {
       setSchemas([]);
+      setStoredProcedures([]);
     }
   }, []);
 
@@ -595,6 +599,7 @@ export default function App() {
                 }
               }}
               schemas={schemas}
+              storedProcedures={storedProcedures}
               onResetAll={handleResetAll}
               onInjectSql={(sql, autoRun) => {
                 handleInjectSql(sql, autoRun);

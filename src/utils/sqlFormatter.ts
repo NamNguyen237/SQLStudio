@@ -12,11 +12,11 @@ const RESERVED_KEYWORDS = new Set([
   'GROUP', 'HAVING', 'ORDER', 'ASC', 'DESC',
   'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS', 'JOIN', 'ON',
   'INSERT', 'INTO', 'VALUES', 'UPDATE', 'SET', 'DELETE',
-  'CREATE', 'ALTER', 'DROP', 'TABLE', 'DATABASE', 'VIEW', 'PROCEDURE', 'FUNCTION',
+  'CREATE', 'ALTER', 'DROP', 'TABLE', 'DATABASE', 'VIEW', 'PROC', 'PROCEDURE', 'FUNCTION',
   'PRIMARY', 'KEY', 'FOREIGN', 'REFERENCES', 'CHECK', 'CONSTRAINT', 'DEFAULT',
-  'WITH', 'OVER', 'PARTITION', 'UNION', 'ALL',
+  'WITH', 'OVER', 'PARTITION', 'UNION', 'ALL', 'EXEC', 'EXECUTE',
   'COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'GETDATE', 'ISNULL', 'DATEDIFF', 'LEN',
-  'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'GO', 'USE', 'IF', 'EXISTS', 'TRUNCATE'
+  'CASE', 'WHEN', 'THEN', 'ELSE', 'BEGIN', 'END', 'GO', 'USE', 'IF', 'EXISTS', 'TRUNCATE'
 ]);
 
 function tokenizeSql(sql: string): SqlToken[] {

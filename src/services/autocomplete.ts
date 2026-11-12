@@ -48,6 +48,11 @@ const TSQL_KEYWORDS: SuggestionItem[] = [
   { label: 'DROP TABLE', kind: 'keyword', detail: 'T-SQL Xóa bảng', insertText: 'DROP TABLE IF EXISTS ' },
   { label: 'TRUNCATE TABLE', kind: 'keyword', detail: 'T-SQL Xóa sạch bảng', insertText: 'TRUNCATE TABLE ' },
   { label: 'EXEC', kind: 'keyword', detail: 'T-SQL Thực thi thủ tục', insertText: 'EXEC ' },
+  { label: 'EXECUTE', kind: 'keyword', detail: 'T-SQL Thực thi thủ tục', insertText: 'EXECUTE ' },
+  { label: 'CREATE PROC', kind: 'snippet', detail: 'T-SQL Tạo thủ tục lưu trữ', insertText: 'CREATE PROC TenThuTuc\nAS\nBEGIN\n  \nEND\nGO' },
+  { label: 'CREATE PROCEDURE', kind: 'snippet', detail: 'T-SQL Tạo thủ tục lưu trữ', insertText: 'CREATE PROCEDURE TenThuTuc\nAS\nBEGIN\n  \nEND\nGO' },
+  { label: 'DROP PROC', kind: 'keyword', detail: 'T-SQL Xóa thủ tục', insertText: 'DROP PROC IF EXISTS ' },
+  { label: 'BEGIN', kind: 'keyword', detail: 'T-SQL Khối lệnh BEGIN', insertText: 'BEGIN\n  \nEND' },
   { label: 'PRIMARY KEY', kind: 'keyword', detail: 'Constraint', insertText: 'PRIMARY KEY' },
   { label: 'FOREIGN KEY', kind: 'keyword', detail: 'Constraint', insertText: 'FOREIGN KEY ' },
   { label: 'REFERENCES', kind: 'keyword', detail: 'FK Reference', insertText: 'REFERENCES ' },
@@ -116,11 +121,20 @@ export function getSuggestions(
     documentation: `Cột của bảng ${c.table}`
   }));
 
+  const procedureItems: SuggestionItem[] = sqlEngine.getStoredProcedures(activeDbId).map(p => ({
+    label: p.name,
+    kind: 'function',
+    detail: `Thủ tục lưu trữ (${p.parameters.length} tham số)`,
+    insertText: `EXEC ${p.name};`,
+    documentation: `Thủ tục lưu trữ ${p.name}`
+  }));
+
   const allItems: SuggestionItem[] = [
     ...TSQL_KEYWORDS,
     ...TSQL_FUNCTIONS,
     ...tableItems,
-    ...columnItems
+    ...columnItems,
+    ...procedureItems
   ];
 
   if (!prefix) {

@@ -18,6 +18,7 @@ export interface SavedDatabaseDump {
   name: string;
   tables: Record<string, any[]>;
   metadata: Record<string, ColumnDefinition[]>;
+  storedProcedures?: Record<string, any>;
 }
 
 export interface WorkspaceSnapshot {
@@ -151,11 +152,15 @@ class IndexedDbService {
       }
 
       const metadata = (sqlEngine as any).tableMetadata?.[dbName] || {};
+      const procs = sqlEngine.getStoredProcedures(dbName) || [];
+      const procsMap: Record<string, any> = {};
+      procs.forEach(p => { procsMap[p.name] = p; });
 
       databasesDump.push({
         name: dbName,
         tables: tablesData,
-        metadata
+        metadata,
+        storedProcedures: procsMap
       });
     }
 
@@ -238,6 +243,11 @@ class IndexedDbService {
           (sqlEngine as any).tableMetadata = {};
         }
         (sqlEngine as any).tableMetadata[dbName] = dbDump.metadata || {};
+
+        // Restore stored procedures in sqlEngine
+        if (dbDump.storedProcedures) {
+          sqlEngine.setStoredProcedures(dbName, dbDump.storedProcedures);
+        }
 
         // Restore tables and data rows
         for (const [tName, rows] of Object.entries(dbDump.tables)) {

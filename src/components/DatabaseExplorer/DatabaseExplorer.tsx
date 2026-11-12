@@ -15,15 +15,17 @@ import {
   Trash2,
   Download,
   X,
-  Eye
+  Eye,
+  FileCode
 } from 'lucide-react';
-import { TableSchemaInfo, DatabaseInfo } from '../../services/sqlEngine';
+import { TableSchemaInfo, DatabaseInfo, StoredProcedureInfo } from '../../services/sqlEngine';
 
 interface DatabaseExplorerProps {
   activeDatabase: string;
   databaseList: DatabaseInfo[];
   onSelectDatabase: (dbName: string) => void;
   schemas: TableSchemaInfo[];
+  storedProcedures?: StoredProcedureInfo[];
   onResetAll: () => void;
   onInjectSql: (sql: string, autoRun?: boolean) => void;
   onOpenErDiagram: () => void;
@@ -36,6 +38,7 @@ export const DatabaseExplorer: React.FC<DatabaseExplorerProps> = ({
   databaseList,
   onSelectDatabase,
   schemas,
+  storedProcedures = [],
   onResetAll,
   onInjectSql,
   onOpenErDiagram,
@@ -59,6 +62,12 @@ export const DatabaseExplorer: React.FC<DatabaseExplorerProps> = ({
       t.name.toLowerCase().includes(term) ||
       t.columns.some(c => c.name.toLowerCase().includes(term))
     );
+  });
+
+  const filteredProcs = storedProcedures.filter(p => {
+    if (!searchTerm.trim()) return true;
+    const term = searchTerm.toLowerCase();
+    return p.name.toLowerCase().includes(term);
   });
 
   return (
@@ -285,6 +294,88 @@ export const DatabaseExplorer: React.FC<DatabaseExplorerProps> = ({
               </div>
             );
           })
+        )}
+
+        {/* Stored Procedures List */}
+        {filteredProcs.length > 0 && (
+          <div className="pt-2">
+            <div className="px-1 pb-1 text-[10px] font-semibold text-purple-400 uppercase tracking-wider flex items-center gap-1">
+              <FileCode className="w-3 h-3 text-purple-400" />
+              <span>Thủ tục lưu trữ ({filteredProcs.length})</span>
+            </div>
+            {filteredProcs.map(proc => {
+              const isExpanded = !!expandedTables['proc_' + proc.name];
+
+              return (
+                <div key={'proc_' + proc.name} className="rounded border border-purple-900/40 bg-purple-950/20 overflow-hidden mb-1">
+                  <div
+                    onClick={() => toggleTable('proc_' + proc.name)}
+                    className="flex items-center justify-between px-2.5 py-1.5 hover:bg-slate-800/70 cursor-pointer transition-colors"
+                  >
+                    <div className="flex items-center gap-1.5 truncate">
+                      {isExpanded ? (
+                        <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      ) : (
+                        <ChevronRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      )}
+                      <FileCode className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                      <span className="font-semibold text-purple-200 truncate font-mono">{proc.name}</span>
+                      <span className="text-[9px] px-1 py-0.2 bg-purple-950 text-purple-300 border border-purple-800/80 rounded font-mono uppercase font-bold shrink-0">
+                        PROC
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-1 shrink-0">
+                      <span className="text-[10px] px-1.5 py-0.2 bg-slate-800 text-slate-400 rounded font-mono tabular-nums">
+                        {proc.parameters.length} tham số
+                      </span>
+                    </div>
+                  </div>
+
+                  {isExpanded && (
+                    <div className="border-t border-slate-800/80 bg-slate-950/70 p-2 space-y-2">
+                      <div className="flex items-center gap-1 text-[11px] text-slate-400 pb-1 border-b border-slate-800/60">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onInjectSql(`EXEC ${proc.name};`, true);
+                          }}
+                          className="flex items-center gap-1 px-1.5 py-0.5 bg-purple-900/80 hover:bg-purple-800 text-purple-200 rounded cursor-pointer transition-colors"
+                          title="Thực thi thủ tục này ngay"
+                        >
+                          <Play className="w-2.5 h-2.5 fill-current" />
+                          <span>EXEC</span>
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onInjectSql(`DROP PROC ${proc.name};`, false);
+                          }}
+                          className="flex items-center gap-1 px-1.5 py-0.5 bg-slate-850 hover:bg-rose-950 text-slate-400 hover:text-rose-400 rounded cursor-pointer transition-colors ml-auto"
+                          title="Tạo lệnh xóa thủ tục"
+                        >
+                          <Trash2 className="w-2.5 h-2.5" />
+                        </button>
+                      </div>
+
+                      {proc.parameters.length > 0 ? (
+                        <div className="space-y-1 pl-1">
+                          {proc.parameters.map((p, idx) => (
+                            <div key={idx} className="flex items-center justify-between text-[11px] text-slate-400 font-mono">
+                              <span className="text-purple-300">{p.name}</span>
+                              <span className="text-[10px] text-slate-500">{p.type}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-[10px] text-slate-500 italic pl-1">Không có tham số</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         )}
       </div>
 
