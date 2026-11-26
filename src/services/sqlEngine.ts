@@ -410,23 +410,46 @@ export class SqlEngineService {
   }
 
   private extractColumnsFromCreateTable(stmt: string): { tableName: string; columns: ColumnDefinition[] } | null {
-    // Regex matching CREATE TABLE [name] (...)
-    const match = stmt.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:\[?dbo\]?\.)?\[?([a-zA-Z0-9_]+)\]?\s*\(([\s\S]+)\)/i);
-    if (!match) return null;
+    // Match header up to opening parenthesis
+    const headerMatch = stmt.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:\[?dbo\]?\.)?\[?([a-zA-Z0-9_]+)\]?\s*\(/i);
+    if (!headerMatch || headerMatch.index === undefined) return null;
 
-    const tableName = match[1];
-    const body = match[2];
+    const tableName = headerMatch[1];
+    const openIdx = headerMatch.index + headerMatch[0].length - 1;
+    let depth = 0;
+    let inStr = false;
+    let closeIdx = -1;
+    for (let i = openIdx; i < stmt.length; i++) {
+      const ch = stmt[i];
+      if (ch === "'" && (i === 0 || stmt[i - 1] !== '\\')) inStr = !inStr;
+      if (!inStr) {
+        if (ch === '(') depth++;
+        else if (ch === ')') {
+          depth--;
+          if (depth === 0) {
+            closeIdx = i;
+            break;
+          }
+        }
+      }
+    }
+    if (closeIdx === -1) return null;
+    const body = stmt.substring(openIdx + 1, closeIdx);
 
     const columns: ColumnDefinition[] = [];
-    // Split columns by comma, avoiding commas inside parentheses like DECIMAL(18,2)
+    // Split columns by comma, avoiding commas inside parentheses like DECIMAL(18,2) or string literals
     const lines: string[] = [];
     let cur = '';
     let parenDepth = 0;
+    let inString = false;
     for (let i = 0; i < body.length; i++) {
       const ch = body[i];
-      if (ch === '(') parenDepth++;
-      else if (ch === ')') parenDepth--;
-      if (ch === ',' && parenDepth === 0) {
+      if (ch === "'" && (i === 0 || body[i - 1] !== '\\')) inString = !inString;
+      if (!inString) {
+        if (ch === '(') parenDepth++;
+        else if (ch === ')') parenDepth--;
+      }
+      if (ch === ',' && parenDepth === 0 && !inString) {
         lines.push(cur.trim());
         cur = '';
       } else {
@@ -440,12 +463,15 @@ export class SqlEngineService {
     const tableFks = new Map<string, string>();
 
     for (const line of lines) {
-      const pkMatch = line.match(/(?:CONSTRAINT\s+[a-zA-Z0-9_]+\s+)?PRIMARY\s+KEY\s*\(([^)]+)\)/i);
+      const pkMatch = line.match(/(?:CONSTRAINT\s+\[?[a-zA-Z0-9_]+\]?\s+)?PRIMARY\s+KEY(?:\s+(?:CLUSTERED|NONCLUSTERED))?\s*\(([^)]+)\)/i);
       if (pkMatch) {
-        pkMatch[1].split(',').forEach(c => compositePkCols.add(c.trim().replace(/^\[|\]$/g, '')));
+        pkMatch[1].split(',').forEach(c => {
+          const cleanCol = c.trim().replace(/\s+(?:ASC|DESC)$/i, '').trim().replace(/^\[|\]$/g, '');
+          if (cleanCol) compositePkCols.add(cleanCol);
+        });
       }
 
-      const fkMatch = line.match(/(?:CONSTRAINT\s+[a-zA-Z0-9_]+\s+)?FOREIGN\s+KEY\s*\(\s*\[?([a-zA-Z0-9_]+)\]?\s*\)\s*REFERENCES\s+(?:\[?dbo\]?\.)?\[?([a-zA-Z0-9_]+)\]?\s*\(\s*\[?([a-zA-Z0-9_]+)\]?\s*\)/i);
+      const fkMatch = line.match(/(?:CONSTRAINT\s+\[?[a-zA-Z0-9_]+\]?\s+)?FOREIGN\s+KEY\s*\(\s*\[?([a-zA-Z0-9_]+)\]?\s*\)\s*REFERENCES\s+(?:\[?dbo\]?\.)?\[?([a-zA-Z0-9_]+)\]?\s*\(\s*\[?([a-zA-Z0-9_]+)\]?\s*\)/i);
       if (fkMatch) {
         tableFks.set(fkMatch[1], `${fkMatch[2]}(${fkMatch[3]})`);
       }
@@ -453,7 +479,7 @@ export class SqlEngineService {
 
     for (const line of lines) {
       // Skip table-level constraints
-      if (/^(CONSTRAINT|PRIMARY\s+KEY|FOREIGN\s+KEY|CHECK|UNIQUE)/i.test(line.trim())) {
+      if (/^(?:CONSTRAINT\b|PRIMARY\s+KEY\b|FOREIGN\s+KEY\b|CHECK\s*\(|UNIQUE\s*(?:\(|CLUSTERED|NONCLUSTERED)|INDEX\b)/i.test(line.trim())) {
         continue;
       }
       const parts = line.trim().split(/\s+/);
@@ -464,7 +490,7 @@ export class SqlEngineService {
         const isFk = /REFERENCES/i.test(line) || tableFks.has(colName);
         let fkTarget = tableFks.get(colName);
         if (!fkTarget) {
-          const refMatch = line.match(/REFERENCES\s+\[?([a-zA-Z0-9_]+)\]?\s*\(\s*\[?([a-zA-Z0-9_]+)\]?\s*\)/i);
+          const refMatch = line.match(/REFERENCES\s+(?:\[?dbo\]?\.)?\[?([a-zA-Z0-9_]+)\]?\s*\(\s*\[?([a-zA-Z0-9_]+)\]?\s*\)/i);
           if (refMatch) {
             fkTarget = `${refMatch[1]}(${refMatch[2]})`;
           }
@@ -532,6 +558,125 @@ export class SqlEngineService {
     return true;
   }
 
+  private preprocessCreateTable(sql: string): string {
+    const headerMatch = sql.match(/^(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[a-zA-Z0-9_]+)\s*\(/i);
+    if (!headerMatch) return sql;
+
+    const header = headerMatch[1];
+    const openIdx = headerMatch[0].length - 1;
+    let depth = 0;
+    let inStr = false;
+    let closeIdx = -1;
+
+    for (let i = openIdx; i < sql.length; i++) {
+      const ch = sql[i];
+      if (ch === "'" && (i === 0 || sql[i - 1] !== '\\')) inStr = !inStr;
+      if (!inStr) {
+        if (ch === '(') depth++;
+        else if (ch === ')') {
+          depth--;
+          if (depth === 0) {
+            closeIdx = i;
+            break;
+          }
+        }
+      }
+    }
+    if (closeIdx === -1) return sql;
+
+    const body = sql.substring(openIdx + 1, closeIdx);
+    let trailing = sql.substring(closeIdx + 1).trim();
+    // Remove SQL Server table storage options like ON [PRIMARY], TEXTIMAGE_ON [PRIMARY]
+    trailing = trailing
+      .replace(/\bTEXTIMAGE_ON\s+[a-zA-Z0-9_]+/gi, '')
+      .replace(/\bON\s+[a-zA-Z0-9_]+/gi, '')
+      .replace(/\bWITH\s*\([^)]*\)/gi, '')
+      .trim();
+
+    // Split body by top-level commas
+    const rawItems: string[] = [];
+    let cur = '';
+    let parenDepth = 0;
+    let inString = false;
+    for (let i = 0; i < body.length; i++) {
+      const ch = body[i];
+      if (ch === "'" && (i === 0 || body[i - 1] !== '\\')) inString = !inString;
+      if (!inString) {
+        if (ch === '(') parenDepth++;
+        else if (ch === ')') parenDepth--;
+      }
+      if (ch === ',' && parenDepth === 0 && !inString) {
+        if (cur.trim()) rawItems.push(cur.trim());
+        cur = '';
+      } else {
+        cur += ch;
+      }
+    }
+    if (cur.trim()) rawItems.push(cur.trim());
+
+    const colDefs: string[] = [];
+    const constraints: string[] = [];
+    const deferredDefaults = new Map<string, string>();
+
+    for (const rawItem of rawItems) {
+      let item = rawItem.trim();
+      if (!item) continue;
+
+      // Handle table-level DEFAULT constraint: CONSTRAINT DF_x DEFAULT (...) FOR colName
+      const defaultForMatch = item.match(/^(?:CONSTRAINT\s+[a-zA-Z0-9_]+\s+)?DEFAULT\s+([\s\S]+?)\s+FOR\s+([a-zA-Z0-9_]+)$/i);
+      if (defaultForMatch) {
+        deferredDefaults.set(defaultForMatch[2].toLowerCase(), defaultForMatch[1].trim());
+        continue;
+      }
+
+      const isTableConstraint = /^(?:CONSTRAINT\b|PRIMARY\s+KEY\b|FOREIGN\s+KEY\b|CHECK\s*\(|UNIQUE\s*(?:\(|CLUSTERED|NONCLUSTERED)|INDEX\b|FULLTEXT\b|SPATIAL\b)/i.test(item);
+
+      if (isTableConstraint) {
+        // Normalize table-level constraint for AlaSQL
+        item = item
+          .replace(/\b(PRIMARY\s+KEY|UNIQUE)\s+(?:CLUSTERED|NONCLUSTERED)\b/gi, '$1')
+          .replace(/\bWITH\s*\([^)]*\)/gi, '')
+          .replace(/\bON\s+[a-zA-Z0-9_]+\s*$/i, '')
+          .replace(/\bNOT\s+FOR\s+REPLICATION\b/gi, '')
+          .replace(/\b(PRIMARY\s+KEY|UNIQUE)\s*\(([^)]+)\)/gi, (_, kw, cols) => {
+            const cleanCols = cols
+              .split(',')
+              .map((c: string) => c.trim().replace(/\s+(?:ASC|DESC)$/i, '').trim())
+              .join(', ');
+            return `${kw} (${cleanCols})`;
+          })
+          .trim();
+        constraints.push(item);
+      } else {
+        // Normalize column definition for AlaSQL
+        item = item
+          .replace(/\bCOLLATE\s+[a-zA-Z0-9_]+\b/gi, '')
+          .replace(/\bPRIMARY\s+KEY\s+(?:CLUSTERED|NONCLUSTERED)\b/gi, 'PRIMARY KEY')
+          .replace(/\bCONSTRAINT\s+[a-zA-Z0-9_]+\s+(?=PRIMARY\s+KEY|UNIQUE|CHECK|DEFAULT|REFERENCES|FOREIGN\s+KEY)/gi, '')
+          .replace(/\b(?:ROWGUIDCOL|SPARSE|FILESTREAM|NOT\s+FOR\s+REPLICATION)\b/gi, '')
+          .replace(/\s{2,}/g, ' ')
+          .trim();
+        colDefs.push(item);
+      }
+    }
+
+    // Apply any CONSTRAINT ... DEFAULT ... FOR col to the matching column definition
+    if (deferredDefaults.size > 0) {
+      for (let i = 0; i < colDefs.length; i++) {
+        const colNameMatch = colDefs[i].match(/^([a-zA-Z0-9_]+)\b/);
+        if (colNameMatch) {
+          const defVal = deferredDefaults.get(colNameMatch[1].toLowerCase());
+          if (defVal !== undefined && !/\bDEFAULT\b/i.test(colDefs[i])) {
+            colDefs[i] += ` DEFAULT ${defVal}`;
+          }
+        }
+      }
+    }
+
+    const reorderedBody = [...colDefs, ...constraints].join(',\n  ');
+    return `${header} (\n  ${reorderedBody}\n)${trailing ? ' ' + trailing : ''}`;
+  }
+
   private preprocessStatement(sql: string): string {
     let s = sql.trim();
     // Strip T-SQL bracket identifiers: [dbo].[NhanVien] -> NhanVien, [HoTen] -> HoTen
@@ -545,6 +690,11 @@ export class SqlEngineService {
     s = s.replace(/\bVARCHAR\s*\(\s*MAX\s*\)/gi, 'VARCHAR(4000)');
     s = s.replace(/\bNVARCHAR\s*\(\s*MAX\s*\)/gi, 'NVARCHAR(4000)');
     s = s.replace(/\bVARBINARY\s*\(\s*MAX\s*\)/gi, 'VARBINARY(4000)');
+
+    // Normalize CREATE TABLE (reorder interleaved constraints after column definitions, strip T-SQL index/collation options)
+    if (/^CREATE\s+TABLE\b/i.test(s)) {
+      s = this.preprocessCreateTable(s);
+    }
 
     // Support T-SQL style "SELECT [alias] = [column]" by transforming to "SELECT [column] AS [alias]"
     if (/^\s*SELECT\b/i.test(s)) {
